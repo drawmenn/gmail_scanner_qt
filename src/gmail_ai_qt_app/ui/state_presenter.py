@@ -8,10 +8,7 @@ class MainWindowStatePresenter:
     def refresh_custom_provider_panel(self) -> None:
         is_custom = self.window.runtime_settings.provider == "custom"
         is_post = self.window.runtime_settings.custom_method == "POST"
-        self.window.custom_panel.setEnabled(is_custom)
         for widget in (
-            self.window.custom_title_label,
-            self.window.custom_subtitle_label,
             self.window.custom_url_label,
             self.window.custom_url_input,
             self.window.custom_method_label,
@@ -42,10 +39,7 @@ class MainWindowStatePresenter:
 
     def refresh_browser_provider_panel(self) -> None:
         is_browser = self.window.runtime_settings.provider == "playwright"
-        self.window.browser_panel.setEnabled(is_browser)
         for widget in (
-            self.window.browser_title_label,
-            self.window.browser_subtitle_label,
             self.window.browser_url_label,
             self.window.browser_url_input,
             self.window.browser_input_label,
@@ -141,6 +135,45 @@ class MainWindowStatePresenter:
         self.window.request_badge.setProperty("status", self.window.current_request_state)
         self.window.request_badge.style().unpolish(self.window.request_badge)
         self.window.request_badge.style().polish(self.window.request_badge)
+
+    def refresh_chromium_install_banner(self) -> None:
+        state = getattr(self.window, "chromium_install_status_state", "hidden")
+        detail = getattr(self.window, "chromium_install_status_detail", "").strip()
+
+        badge_key_map = {
+            "running": "browser_install_badge_running",
+            "finished": "browser_install_badge_finished",
+            "failed": "browser_install_badge_failed",
+            "canceled": "browser_install_badge_canceled",
+        }
+        status_key_map = {
+            "running": "browser_install_status_running",
+            "finished": "browser_install_status_finished",
+            "failed": "browser_install_status_failed",
+            "canceled": "browser_install_status_canceled",
+        }
+
+        if state == "running" and detail:
+            status_text = self.window.text("browser_install_status_running_detail", detail=detail)
+        elif state == "failed" and detail:
+            status_text = self.window.text("browser_install_status_failed_detail", error=detail)
+        else:
+            status_text = self.window.text(status_key_map.get(state, "browser_install_status_running"))
+
+        is_visible = state in {"running", "finished", "failed", "canceled"}
+        self.window.install_banner.setVisible(is_visible)
+        self.window.install_banner.setProperty("state", state if is_visible else "hidden")
+        self.window.install_status_badge.setText(
+            self.window.text(badge_key_map.get(state, "browser_install_badge_running")) if is_visible else ""
+        )
+        self.window.install_status_label.setText(status_text if is_visible else "")
+        self.window.install_cancel_btn.setVisible(state == "running")
+        self.window.install_cancel_btn.setEnabled(state == "running")
+
+        self.window.install_banner.style().unpolish(self.window.install_banner)
+        self.window.install_banner.style().polish(self.window.install_banner)
+        self.window.install_status_badge.style().unpolish(self.window.install_status_badge)
+        self.window.install_status_badge.style().polish(self.window.install_status_badge)
 
     def refresh_runtime_panel(self, note_key: str | None = None) -> None:
         state_key_map = {

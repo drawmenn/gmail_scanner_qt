@@ -158,6 +158,85 @@ def main_window_qss() -> str:
             color: #13253b;
         }
 
+        QFrame#InstallBanner {
+            border-radius: 18px;
+            border: 1px solid #d7decb;
+            background: #eef3ea;
+        }
+
+        QFrame#InstallBanner[state="hidden"] {
+            background: transparent;
+            border: none;
+        }
+
+        QFrame#InstallBanner[state="running"] {
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #eef7e8, stop:1 #e4f2df
+            );
+            border: 1px solid #bad7aa;
+        }
+
+        QFrame#InstallBanner[state="finished"] {
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #edf9f2, stop:1 #e4f5ea
+            );
+            border: 1px solid #a7d8ba;
+        }
+
+        QFrame#InstallBanner[state="failed"] {
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #fff0eb, stop:1 #fde7e2
+            );
+            border: 1px solid #e4b1a5;
+        }
+
+        QFrame#InstallBanner[state="canceled"] {
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #fff4df, stop:1 #fceaca
+            );
+            border: 1px solid #e8c37b;
+        }
+
+        QLabel#InstallStatusBadge {
+            border-radius: 12px;
+            padding: 6px 10px;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        QFrame#InstallBanner[state="running"] QLabel#InstallStatusBadge {
+            background: #d9efe0;
+            color: #14532d;
+            border: 1px solid #9fd0a4;
+        }
+
+        QFrame#InstallBanner[state="finished"] QLabel#InstallStatusBadge {
+            background: #dff7e8;
+            color: #166534;
+            border: 1px solid #9dd6b4;
+        }
+
+        QFrame#InstallBanner[state="failed"] QLabel#InstallStatusBadge {
+            background: #fde4df;
+            color: #9f1239;
+            border: 1px solid #ebb0a6;
+        }
+
+        QFrame#InstallBanner[state="canceled"] QLabel#InstallStatusBadge {
+            background: #fff0d4;
+            color: #92400e;
+            border: 1px solid #e8c276;
+        }
+
+        QLabel#InstallStatusText {
+            color: #2a3a46;
+            line-height: 1.35;
+        }
+
         QLabel#PageSubtitle, QLabel#ContentSubtitle, QLabel#MetricSubtitle {
             color: #425468;
             line-height: 1.35;
@@ -283,6 +362,11 @@ def main_window_qss() -> str:
         QPushButton:disabled {
             background: #d6ddd4;
             color: #90a29a;
+        }
+
+        QPushButton#InstallCancelButton {
+            min-height: 34px;
+            padding: 0 12px;
         }
 
         QLineEdit, QListWidget, QTextEdit, QComboBox {

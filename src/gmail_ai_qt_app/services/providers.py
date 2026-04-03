@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 import re
+import time
+from threading import Event
 from typing import Literal
 
 from ..models.state import RuntimeSettings
@@ -33,6 +37,10 @@ class ScanOutcome:
     tag: str = "info"
     message_key: str = ""
     params: dict[str, str] = field(default_factory=dict)
+
+
+class ScanCanceledError(Exception):
+    pass
 
 
 PROVIDER_OPTIONS = [
@@ -112,12 +120,17 @@ def prepare_scan(provider: str, name: str, settings: RuntimeSettings | None = No
     return PreparedScan(mode="local")
 
 
-def run_local_scan(provider: str, name: str, settings: RuntimeSettings | None = None) -> ScanOutcome:
+def run_local_scan(
+    provider: str,
+    name: str,
+    settings: RuntimeSettings | None = None,
+    cancel_event: Event | None = None,
+) -> ScanOutcome:
     provider = normalize_provider(provider)
     if provider == "playwright":
-        return run_playwright_scan(name, settings)
+        return run_playwright_scan(name, settings, cancel_event)
     if provider == "google_browser":
-        return run_google_browser_scan(name, settings)
+        return run_google_browser_scan(name, settings, cancel_event)
     if provider == "custom":
         return ScanOutcome(
             error_delta=1,
@@ -159,7 +172,11 @@ def run_local_scan(provider: str, name: str, settings: RuntimeSettings | None = 
     )
 
 
-def run_playwright_scan(name: str, settings: RuntimeSettings | None) -> ScanOutcome:
+def run_playwright_scan(
+    name: str,
+    settings: RuntimeSettings | None,
+    cancel_event: Event | None = None,
+) -> ScanOutcome:
     if settings is None:
         return ScanOutcome(
             error_delta=1,
@@ -206,9 +223,12 @@ def run_playwright_scan(name: str, settings: RuntimeSettings | None) -> ScanOutc
     timeout_ms = max(1000, int(settings.browser_timeout_ms or 10_000))
     delay_ms = max(0, int(settings.browser_delay_ms or 0))
     headers = build_custom_headers(settings.browser_headers, name)
+    browser = None
 
     try:
+        ensure_scan_not_canceled(cancel_event)
         with sync_playwright() as playwright:
+            ensure_scan_not_canceled(cancel_event)
             launch_kwargs = {"headless": bool(settings.browser_headless)}
             if settings.proxy_enabled and settings.proxy_url.strip():
                 proxy_server = settings.proxy_url.strip()
@@ -228,27 +248,32 @@ def run_playwright_scan(name: str, settings: RuntimeSettings | None) -> ScanOutc
                     )
                 raise
             page = browser.new_page()
+            ensure_scan_not_canceled(cancel_event)
             if headers:
                 page.set_extra_http_headers(headers)
 
             page.goto(page_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            ensure_scan_not_canceled(cancel_event)
 
             if settings.browser_input_selector.strip():
                 page.locator(settings.browser_input_selector.strip()).first.fill(input_value, timeout=timeout_ms)
+                ensure_scan_not_canceled(cancel_event)
 
             submit_selector = settings.browser_submit_selector.strip()
             if submit_selector:
                 page.locator(submit_selector).first.click(timeout=timeout_ms)
             elif settings.browser_input_selector.strip():
                 page.locator(settings.browser_input_selector.strip()).first.press("Enter")
+            ensure_scan_not_canceled(cancel_event)
 
             if delay_ms:
-                page.wait_for_timeout(delay_ms)
+                wait_for_cancellation(delay_ms, cancel_event)
 
+            ensure_scan_not_canceled(cancel_event)
             page_html = page.content()
-            outcome = parse_browser_response(name, page, page_html, settings)
-            browser.close()
-            return outcome
+            return parse_browser_response(name, page, page_html, settings)
+    except ScanCanceledError:
+        raise
     except PlaywrightTimeoutError:
         return ScanOutcome(
             error_delta=1,
@@ -270,9 +295,19 @@ def run_playwright_scan(name: str, settings: RuntimeSettings | None) -> ScanOutc
             message_key="log_browser_failed",
             params={"name": name, "error": str(exc)},
         )
+    finally:
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
 
-def run_google_browser_scan(name: str, settings: RuntimeSettings | None) -> ScanOutcome:
+def run_google_browser_scan(
+    name: str,
+    settings: RuntimeSettings | None,
+    cancel_event: Event | None = None,
+) -> ScanOutcome:
     try:
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -292,8 +327,11 @@ def run_google_browser_scan(name: str, settings: RuntimeSettings | None) -> Scan
             proxy_server = f"http://{proxy_server}"
         proxy_kwargs["proxy"] = {"server": proxy_server}
 
+    browser = None
     try:
+        ensure_scan_not_canceled(cancel_event)
         with sync_playwright() as playwright:
+            ensure_scan_not_canceled(cancel_event)
             try:
                 browser = playwright.chromium.launch(headless=True, **proxy_kwargs)
             except Exception as exc:
@@ -306,59 +344,22 @@ def run_google_browser_scan(name: str, settings: RuntimeSettings | None) -> Scan
                     )
                 raise
             page = browser.new_page()
+            ensure_scan_not_canceled(cancel_event)
             page.goto(
                 "https://accounts.google.com/signin/v2/identifier",
                 wait_until="domcontentloaded",
                 timeout=15_000,
             )
+            ensure_scan_not_canceled(cancel_event)
             page.locator('input[type="email"]').first.fill(f"{name}@gmail.com", timeout=10_000)
+            ensure_scan_not_canceled(cancel_event)
             page.locator("#identifierNext").first.click(timeout=10_000)
-            page.wait_for_timeout(3000)
+            wait_for_cancellation(3000, cancel_event)
+            ensure_scan_not_canceled(cancel_event)
 
-            page_text = page.content().lower()
-            browser.close()
-
-        not_found_patterns = [
-            "couldn't find your google account",
-            "\u627e\u4e0d\u5230\u60a8\u7684 google \u8d26\u53f7",
-            "find your google account",
-            "no account found",
-            "that google account doesn't exist",
-            "couldn\u2019t find your google account",
-        ]
-        not_found = any(pattern in page_text for pattern in not_found_patterns)
-
-        taken_patterns = [
-            "wrong password",
-            "enter your password",
-            "welcome",
-            "hi,",
-        ]
-        is_taken = any(pattern in page_text for pattern in taken_patterns)
-
-        if not_found:
-            return ScanOutcome(
-                checked_delta=1,
-                hit_delta=1,
-                tag="hit",
-                message_key="log_name_available",
-                params={"name": name},
-            )
-        if is_taken:
-            return ScanOutcome(
-                checked_delta=1,
-                taken_delta=1,
-                tag="taken",
-                message_key="log_name_taken",
-                params={"name": name},
-            )
-        return ScanOutcome(
-            checked_delta=1,
-            taken_delta=1,
-            tag="taken",
-            message_key="log_name_taken",
-            params={"name": name},
-        )
+            return parse_google_browser_content(name, page.content())
+    except ScanCanceledError:
+        raise
     except PlaywrightTimeoutError:
         return ScanOutcome(
             error_delta=1,
@@ -380,6 +381,55 @@ def run_google_browser_scan(name: str, settings: RuntimeSettings | None) -> Scan
             message_key="log_browser_failed",
             params={"name": name, "error": str(exc)},
         )
+    finally:
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+
+def parse_google_browser_content(name: str, page_html: str) -> ScanOutcome:
+    page_text = (page_html or "").lower()
+
+    not_found_patterns = [
+        "couldn't find your google account",
+        "\u627e\u4e0d\u5230\u60a8\u7684 google \u8d26\u53f7",
+        "find your google account",
+        "no account found",
+        "that google account doesn't exist",
+        "couldn\u2019t find your google account",
+    ]
+    if any(pattern in page_text for pattern in not_found_patterns):
+        return ScanOutcome(
+            checked_delta=1,
+            hit_delta=1,
+            tag="hit",
+            message_key="log_name_available",
+            params={"name": name},
+        )
+
+    taken_patterns = [
+        "wrong password",
+        "enter your password",
+        "welcome",
+        "hi,",
+    ]
+    if any(pattern in page_text for pattern in taken_patterns):
+        return ScanOutcome(
+            checked_delta=1,
+            taken_delta=1,
+            tag="taken",
+            message_key="log_name_taken",
+            params={"name": name},
+        )
+
+    return ScanOutcome(
+        error_delta=1,
+        tag="error",
+        message_key="log_browser_result_unknown",
+        params={"name": name},
+    )
 
 
 def parse_browser_response(name: str, page, page_html: str, settings: RuntimeSettings) -> ScanOutcome:
@@ -622,6 +672,21 @@ def validate_regex_pattern(pattern: str) -> str | None:
     except re.error:
         return pattern
     return None
+
+
+def ensure_scan_not_canceled(cancel_event: Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ScanCanceledError()
+
+
+def wait_for_cancellation(delay_ms: int, cancel_event: Event | None) -> None:
+    remaining = max(0, int(delay_ms))
+    while remaining > 0:
+        ensure_scan_not_canceled(cancel_event)
+        sleep_ms = min(remaining, 100)
+        time.sleep(sleep_ms / 1000)
+        remaining -= sleep_ms
+    ensure_scan_not_canceled(cancel_event)
 
 
 def validate_browser_settings(settings: RuntimeSettings) -> str | None:

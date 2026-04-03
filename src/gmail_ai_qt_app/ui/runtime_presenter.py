@@ -60,7 +60,9 @@ class MainWindowRuntimePresenter:
         self.window.refresh_review_panel()
         self.window.update_auto_review_timer()
 
-    def start(self) -> None:
+    def start(self, skip_browser_check: bool = False) -> None:
+        if not skip_browser_check and not self.window.ensure_chromium_ready():
+            return
         self.window.runtime_state = "running"
         self.window.worker.start_scanning()
         self.window.refresh_runtime_panel("runtime_note_started")
@@ -69,6 +71,7 @@ class MainWindowRuntimePresenter:
 
     def pause(self) -> None:
         self.window.runtime_state = "paused"
+        self.window.resume_scan_after_chromium_install = False
         self.window.auto_review_timer.stop()
         if self.window.runtime_settings.provider == "manual":
             self.window.current_request_state = "idle"
@@ -80,6 +83,7 @@ class MainWindowRuntimePresenter:
 
     def stop(self) -> None:
         self.window.runtime_state = "stopped"
+        self.window.resume_scan_after_chromium_install = False
         self.window.auto_review_timer.stop()
         if self.window.runtime_settings.provider == "manual":
             self.window.current_request_state = "idle"
@@ -90,6 +94,7 @@ class MainWindowRuntimePresenter:
         self.window.add_log_event("log_scanner_stopped", "info")
 
     def close_event(self, event) -> None:
+        self.window.shutdown_chromium_installation()
         self.window.auto_review_timer.stop()
         self.window._log_flush_timer.stop()
         self.window.flush_log_entries()

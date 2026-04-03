@@ -76,6 +76,7 @@ class MainWindowTranslationPresenter:
         w.copy_candidate_btn.setText(w.text("review_copy"))
         w.open_review_page_btn.setText(w.text("review_open"))
         w.export_csv_btn.setText(w.text("review_export"))
+        w.install_cancel_btn.setText(w.text("browser_install_cancel"))
 
         w.proxy_check.setText(w.text("proxy_enabled"))
         w.proxy_input.setPlaceholderText(w.text("proxy_placeholder"))
@@ -128,6 +129,7 @@ class MainWindowTranslationPresenter:
         w.log.setPlaceholderText(w.text("log_placeholder"))
         w.refresh_metric_labels()
         w.refresh_request_status()
+        w.state_presenter.refresh_chromium_install_banner()
         w.refresh_review_panel()
 
     def refresh_provider_options(self) -> None:

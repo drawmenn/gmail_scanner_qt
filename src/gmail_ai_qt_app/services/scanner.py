@@ -1,5 +1,9 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from queue import Empty, SimpleQueue
 import random
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import Iterable
 
 from PySide6.QtCore import QByteArray, QObject, QTimer, QUrl, QUrlQuery, Signal, Slot
@@ -11,7 +15,23 @@ from PySide6.QtNetwork import (
 )
 
 from ..models.state import RuntimeSettings, ScanHistory, ScanStats
-from .providers import ScanOutcome, normalize_provider, parse_network_response, prepare_scan, run_local_scan
+from .providers import (
+    ScanCanceledError,
+    ScanOutcome,
+    normalize_provider,
+    parse_network_response,
+    prepare_scan,
+    run_local_scan,
+)
+from .seed_utils import normalize_seed_value, sanitize_seed_values
+
+
+@dataclass(frozen=True)
+class LocalScanResult:
+    task_id: int
+    generation: int
+    canceled: bool = False
+    outcome: ScanOutcome | None = None
 
 
 class ScannerWorker(QObject):
@@ -42,6 +62,7 @@ class ScannerWorker(QObject):
         self._history = ScanHistory()
         self._network_manager: QNetworkAccessManager | None = None
         self._request_timer: QTimer | None = None
+        self._local_scan_timer: QTimer | None = None
         self._current_reply: QNetworkReply | None = None
         self._pending_candidate: str | None = None
         self._request_interval_ms = 500
@@ -49,6 +70,12 @@ class ScannerWorker(QObject):
         self._pool_exhausted = False
         self._explicit_candidates: list[str] = []
         self._short_seeds: list[str] = []
+        self._local_scan_results: SimpleQueue[LocalScanResult] = SimpleQueue()
+        self._local_scan_sequence = 0
+        self._active_local_scan_id: int | None = None
+        self._active_local_scan_generation: int | None = None
+        self._active_local_scan_cancel_event: Event | None = None
+        self._settings.seeds = sanitize_seed_values(self._settings.seeds)
         self._rebuild_name_pool_locked(self._settings.seeds)
 
         self._set_names_requested.connect(self._set_names)
@@ -71,6 +98,11 @@ class ScannerWorker(QObject):
         self._request_timer = QTimer(self)
         self._request_timer.setSingleShot(True)
         self._request_timer.timeout.connect(self._start_next_request)
+
+        self._local_scan_timer = QTimer(self)
+        self._local_scan_timer.setInterval(50)
+        self._local_scan_timer.timeout.connect(self._drain_local_scan_results)
+        self._local_scan_timer.start()
         self._emit_request_state("idle")
 
     def set_names(self, names: Iterable[str]) -> None:
@@ -113,7 +145,7 @@ class ScannerWorker(QObject):
     @Slot(list)
     def _set_names(self, names: list[str]) -> None:
         with self._lock:
-            self._settings.seeds = list(names)
+            self._settings.seeds = sanitize_seed_values(names)
             self._generation += 1
             self._pending_candidate = None
             self._candidate_index = 0
@@ -122,6 +154,7 @@ class ScannerWorker(QObject):
 
         self._stop_request_timer()
         self._abort_current_reply()
+        self._cancel_active_local_scan()
         self._emit_request_state("idle")
         self._schedule_next_request(0)
 
@@ -143,6 +176,7 @@ class ScannerWorker(QObject):
 
         self._stop_request_timer()
         self._abort_current_reply()
+        self._cancel_active_local_scan()
         self._emit_request_state("idle")
         self._schedule_next_request(0)
 
@@ -166,6 +200,7 @@ class ScannerWorker(QObject):
         if self._settings.provider == "custom":
             self._stop_request_timer()
             self._abort_current_reply()
+            self._cancel_active_local_scan()
             self._emit_request_state("idle")
             self._schedule_next_request(0)
 
@@ -193,6 +228,7 @@ class ScannerWorker(QObject):
         if self._settings.provider == "playwright":
             self._stop_request_timer()
             self._abort_current_reply()
+            self._cancel_active_local_scan()
             self._emit_request_state("idle")
             self._schedule_next_request(0)
 
@@ -216,7 +252,8 @@ class ScannerWorker(QObject):
                 self._generation += 1
                 self._pending_candidate = None
         self._stop_request_timer()
-        if self._abort_current_reply():
+        canceled = self._abort_current_reply() or self._cancel_active_local_scan()
+        if canceled:
             self._emit_request_state("canceled")
         else:
             self._emit_request_state("idle")
@@ -231,7 +268,8 @@ class ScannerWorker(QObject):
             self._candidate_index = 0
             self._pool_exhausted = False
         self._stop_request_timer()
-        if self._abort_current_reply():
+        canceled = self._abort_current_reply() or self._cancel_active_local_scan()
+        if canceled:
             self._emit_request_state("canceled")
         else:
             self._emit_request_state("idle")
@@ -239,10 +277,16 @@ class ScannerWorker(QObject):
     @Slot()
     def _shutdown(self) -> None:
         self._stop_scanning()
+        if self._local_scan_timer is not None:
+            self._local_scan_timer.stop()
 
     @Slot()
     def _start_next_request(self) -> None:
-        if self._network_manager is None or self._current_reply is not None:
+        if (
+            self._network_manager is None
+            or self._current_reply is not None
+            or self._active_local_scan_id is not None
+        ):
             return
 
         with self._lock:
@@ -254,6 +298,7 @@ class ScannerWorker(QObject):
             proxy_url = self._settings.proxy_url
             seed_count = len(self._settings.seeds)
             name = self._build_candidate_locked()
+            settings_snapshot = RuntimeSettings.from_dict(self._settings.to_dict())
 
         if not name:
             self.log_signal.emit(
@@ -272,10 +317,8 @@ class ScannerWorker(QObject):
             return
 
         if prepared.mode == "local":
+            self._start_local_scan(generation, provider, name, settings_snapshot)
             self._emit_request_state("requesting", {"name": name})
-            self._complete_outcome(run_local_scan(provider, name, self._settings))
-            self._emit_request_state("idle")
-            self._schedule_next_request(self._request_interval_ms)
             return
 
         self._apply_proxy(proxy_enabled, proxy_url)
@@ -386,7 +429,11 @@ class ScannerWorker(QObject):
         self._schedule_next_request(0)
 
     def _schedule_next_request(self, delay_ms: int) -> None:
-        if self._request_timer is None or self._current_reply is not None:
+        if (
+            self._request_timer is None
+            or self._current_reply is not None
+            or self._active_local_scan_id is not None
+        ):
             return
 
         with self._lock:
@@ -396,6 +443,7 @@ class ScannerWorker(QObject):
                 and bool(self._settings.seeds)
                 and self._pending_candidate is None
                 and not self._pool_exhausted
+                and self._active_local_scan_id is None
             )
 
         if can_schedule:
@@ -410,6 +458,110 @@ class ScannerWorker(QObject):
             self._current_reply.abort()
             return True
         return False
+
+    def _cancel_active_local_scan(self) -> bool:
+        with self._lock:
+            if self._active_local_scan_cancel_event is None:
+                return False
+            self._active_local_scan_cancel_event.set()
+            self._active_local_scan_id = None
+            self._active_local_scan_generation = None
+            self._active_local_scan_cancel_event = None
+        return True
+
+    def _start_local_scan(
+        self,
+        generation: int,
+        provider: str,
+        name: str,
+        settings: RuntimeSettings,
+    ) -> None:
+        with self._lock:
+            self._local_scan_sequence += 1
+            task_id = self._local_scan_sequence
+            cancel_event = Event()
+            self._active_local_scan_id = task_id
+            self._active_local_scan_generation = generation
+            self._active_local_scan_cancel_event = cancel_event
+
+        def runner() -> None:
+            try:
+                outcome = run_local_scan(
+                    provider,
+                    name,
+                    settings,
+                    cancel_event=cancel_event,
+                )
+                result = LocalScanResult(
+                    task_id=task_id,
+                    generation=generation,
+                    outcome=outcome,
+                )
+            except ScanCanceledError:
+                result = LocalScanResult(
+                    task_id=task_id,
+                    generation=generation,
+                    canceled=True,
+                )
+            except Exception as exc:
+                result = LocalScanResult(
+                    task_id=task_id,
+                    generation=generation,
+                    outcome=ScanOutcome(
+                        error_delta=1,
+                        tag="error",
+                        message_key="log_request_failed",
+                        params={"name": name, "error": str(exc)},
+                    ),
+                )
+
+            self._local_scan_results.put(result)
+
+        Thread(
+            target=runner,
+            name=f"scanner-local-{task_id}",
+            daemon=True,
+        ).start()
+
+    @Slot()
+    def _drain_local_scan_results(self) -> None:
+        while True:
+            try:
+                result = self._local_scan_results.get_nowait()
+            except Empty:
+                return
+            self._handle_local_scan_result(result)
+
+    def _handle_local_scan_result(self, result: LocalScanResult) -> None:
+        with self._lock:
+            is_active_task = result.task_id == self._active_local_scan_id
+            if is_active_task:
+                self._active_local_scan_id = None
+                self._active_local_scan_generation = None
+                self._active_local_scan_cancel_event = None
+            is_current = (
+                is_active_task
+                and self._generation == result.generation
+                and self._running
+                and not self._paused
+            )
+
+        if not is_active_task:
+            return
+
+        if not is_current:
+            self._schedule_next_request(0)
+            return
+
+        if result.canceled:
+            self._emit_request_state("idle")
+            self._schedule_next_request(0)
+            return
+
+        if result.outcome is not None:
+            self._complete_outcome(result.outcome)
+        self._emit_request_state("idle")
+        self._schedule_next_request(self._request_interval_ms)
 
     def _apply_proxy(self, enabled: bool, proxy_url: str) -> None:
         if self._network_manager is None:
@@ -469,14 +621,13 @@ class ScannerWorker(QObject):
         self.request_state_signal.emit(state, params or {})
 
     def _rebuild_name_pool_locked(self, names: Iterable[str]) -> None:
+        normalized_names = sanitize_seed_values(names)
         self._explicit_candidates = [
-            item.strip().lower()
-            for item in names
+            item
+            for item in normalized_names
             if self._is_explicit_candidate(item)
         ]
-        self._short_seeds = [
-            item.strip().lower() for item in names if item and item.strip()
-        ]
+        self._short_seeds = normalized_names
 
     def _build_candidate_locked(self) -> str | None:
         if self._explicit_candidates:
@@ -497,7 +648,7 @@ class ScannerWorker(QObject):
 
     @staticmethod
     def _is_explicit_candidate(value: str) -> bool:
-        candidate = (value or "").strip().lower()
+        candidate = normalize_seed_value(value)
         return 6 <= len(candidate) <= 30 and candidate.isalnum()
 
     @staticmethod

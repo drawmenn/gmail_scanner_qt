@@ -1,9 +1,9 @@
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QDateTime, QThread, QTimer
+from PySide6.QtCore import QDateTime, QProcess, QProcessEnvironment, QThread, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 if __package__ in (None, ""):
     SRC_ROOT = Path(__file__).resolve().parents[2]
@@ -12,7 +12,13 @@ if __package__ in (None, ""):
 
     from gmail_ai_qt_app.i18n import translate
     from gmail_ai_qt_app.models.state import RuntimeSettings
+    from gmail_ai_qt_app.services.playwright_installer import (
+        chromium_install_command,
+        is_chromium_installed,
+        provider_requires_chromium,
+    )
     from gmail_ai_qt_app.services.settings_store import RuntimeSettingsStore
+    from gmail_ai_qt_app.services.seed_utils import sanitize_seed_values
     from gmail_ai_qt_app.ui.actions_presenter import MainWindowActionsPresenter
     from gmail_ai_qt_app.ui.chart_presenter import MainWindowChartPresenter
     from gmail_ai_qt_app.ui.layout_builder import MainWindowLayoutBuilder
@@ -26,7 +32,13 @@ if __package__ in (None, ""):
 else:
     from ..i18n import translate
     from ..models.state import RuntimeSettings
+    from ..services.playwright_installer import (
+        chromium_install_command,
+        is_chromium_installed,
+        provider_requires_chromium,
+    )
     from ..services.settings_store import RuntimeSettingsStore
+    from ..services.seed_utils import sanitize_seed_values
     from .actions_presenter import MainWindowActionsPresenter
     from .chart_presenter import MainWindowChartPresenter
     from ..services.scanner import ScannerWorker
@@ -49,6 +61,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings_store = RuntimeSettingsStore()
         self.runtime_settings, _load_error = self.settings_store.load()
+        self.runtime_settings.seeds = sanitize_seed_values(self.runtime_settings.seeds)
         if _load_error:
             import sys
             print(f"[gmail-ai-qt] Failed to load settings: {_load_error}", file=sys.stderr)
@@ -58,6 +71,13 @@ class MainWindow(QMainWindow):
         self.current_request_params: dict = {}
         self.current_review_candidate = ""
         self.review_records: list[dict] = []
+        self.chromium_install_process: QProcess | None = None
+        self.chromium_install_output = ""
+        self.chromium_install_error = ""
+        self.chromium_install_canceled = False
+        self.resume_scan_after_chromium_install = False
+        self.chromium_install_status_state = "hidden"
+        self.chromium_install_status_detail = ""
         self.last_snapshot = {
             "stats": {"checked": 0, "hit": 0, "error": 0, "rate": 0.0},
             "history": {"checked": [], "hit": [], "rate": []},
@@ -85,6 +105,10 @@ class MainWindow(QMainWindow):
         self.auto_review_timer.setSingleShot(True)
         self.auto_review_timer.timeout.connect(self.run_auto_review_action)
 
+        self.chromium_install_status_timer = QTimer(self)
+        self.chromium_install_status_timer.setSingleShot(True)
+        self.chromium_install_status_timer.timeout.connect(self.clear_chromium_install_status)
+
         self._log_flush_timer = QTimer(self)
         self._log_flush_timer.setInterval(self.LOG_FLUSH_INTERVAL_MS)
         self._log_flush_timer.timeout.connect(self.flush_log_entries)
@@ -103,6 +127,7 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self.start)
         self.pause_btn.clicked.connect(self.pause)
         self.stop_btn.clicked.connect(self.stop)
+        self.install_cancel_btn.clicked.connect(self.cancel_chromium_installation)
         self.add_btn.clicked.connect(self.add_name)
         self.remove_btn.clicked.connect(self.remove_selected_name)
         self.name_list.installEventFilter(self)
@@ -164,6 +189,7 @@ class MainWindow(QMainWindow):
         self.sync_proxy_settings()
         self.apply_snapshot(self.worker.snapshot())
         self.refresh_request_status()
+        self.refresh_chromium_install_banner()
         self.refresh_review_panel()
         self.refresh_runtime_panel("runtime_note_stopped")
         self.add_log_event("log_dashboard_ready", "info")
@@ -197,6 +223,197 @@ class MainWindow(QMainWindow):
             params=dict(params or {}),
         )
         self.log_buffer.add_entry(entry)
+
+    def set_chromium_install_status(
+        self,
+        state: str,
+        detail: str = "",
+        auto_hide_ms: int = 0,
+    ) -> None:
+        self.chromium_install_status_timer.stop()
+        self.chromium_install_status_state = state
+        self.chromium_install_status_detail = detail.strip()
+        self.refresh_chromium_install_banner()
+        if auto_hide_ms > 0:
+            self.chromium_install_status_timer.start(auto_hide_ms)
+
+    def clear_chromium_install_status(self) -> None:
+        self.chromium_install_status_timer.stop()
+        self.chromium_install_status_state = "hidden"
+        self.chromium_install_status_detail = ""
+        self.refresh_chromium_install_banner()
+
+    def ensure_chromium_ready(self) -> bool:
+        if not provider_requires_chromium(self.runtime_settings.provider):
+            return True
+
+        if self.chromium_install_process is not None:
+            self.resume_scan_after_chromium_install = True
+            self.add_log_event("log_browser_install_running", "info")
+            return False
+
+        if is_chromium_installed():
+            return True
+
+        install_command = chromium_install_command()
+        if install_command is None:
+            self.add_log_event("log_browser_dependency_missing", "error")
+            QMessageBox.warning(
+                self,
+                self.text("browser_install_title"),
+                self.text("browser_install_dependency_missing"),
+            )
+            return False
+
+        provider_label = self.provider_combo.currentText() or self.runtime_settings.provider
+        answer = QMessageBox.question(
+            self,
+            self.text("browser_install_title"),
+            self.text("browser_install_missing_prompt", provider=provider_label),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.add_log_event(
+                "log_browser_install_declined",
+                "info",
+                {"provider": provider_label},
+            )
+            return False
+
+        self.start_chromium_installation(install_command, resume_scan=True)
+        return False
+
+    def start_chromium_installation(self, install_command, resume_scan: bool) -> None:
+        if self.chromium_install_process is not None:
+            return
+
+        self.resume_scan_after_chromium_install = resume_scan
+        self.chromium_install_output = ""
+        self.chromium_install_error = ""
+        self.chromium_install_canceled = False
+
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+
+        environment = QProcessEnvironment.systemEnvironment()
+        for key, value in install_command.env.items():
+            environment.insert(key, value)
+        process.setProcessEnvironment(environment)
+
+        process.readyRead.connect(self._read_chromium_install_output)
+        process.errorOccurred.connect(self._handle_chromium_install_error)
+        process.finished.connect(self._finish_chromium_installation)
+
+        self.chromium_install_process = process
+
+        self.add_log_event("log_browser_install_started", "info")
+        self.set_chromium_install_status("running")
+        process.start(install_command.program, list(install_command.arguments))
+
+    def cancel_chromium_installation(self) -> None:
+        if self.chromium_install_process is None:
+            return
+        self.chromium_install_canceled = True
+        self.resume_scan_after_chromium_install = False
+        self.set_chromium_install_status("running", self.text("browser_install_canceling"))
+        self.chromium_install_process.kill()
+
+    def shutdown_chromium_installation(self) -> None:
+        if self.chromium_install_process is None:
+            return
+        self.chromium_install_status_timer.stop()
+        self.resume_scan_after_chromium_install = False
+        self.chromium_install_canceled = True
+        self.chromium_install_process.kill()
+        self.chromium_install_process.waitForFinished(1000)
+
+    def _read_chromium_install_output(self) -> None:
+        if self.chromium_install_process is None:
+            return
+
+        chunk = bytes(self.chromium_install_process.readAll()).decode("utf-8", errors="replace")
+        if not chunk:
+            return
+
+        self.chromium_install_output += chunk
+        latest_line = self._latest_install_output_line(chunk)
+        self.set_chromium_install_status("running", latest_line)
+
+    def _handle_chromium_install_error(self, _error) -> None:
+        if self.chromium_install_process is None:
+            return
+        self._read_chromium_install_output()
+        self.chromium_install_error = self.chromium_install_process.errorString().strip()
+        if _error == QProcess.ProcessError.FailedToStart:
+            self._fail_chromium_installation()
+
+    def _finish_chromium_installation(self, exit_code: int, exit_status) -> None:
+        if self.chromium_install_process is None:
+            return
+
+        process, resume_scan, canceled, error_text, output_text = self._take_chromium_install_state()
+
+        if process is not None:
+            process.deleteLater()
+
+        if canceled:
+            self.add_log_event("log_browser_install_canceled", "info")
+            self.set_chromium_install_status("canceled", auto_hide_ms=5000)
+            return
+
+        if (
+            exit_status == QProcess.ExitStatus.NormalExit
+            and exit_code == 0
+            and is_chromium_installed()
+        ):
+            self.add_log_event("log_browser_install_finished", "info")
+            self.set_chromium_install_status("finished", auto_hide_ms=5000)
+            if resume_scan:
+                self.runtime_presenter.start(skip_browser_check=True)
+            return
+
+        detail = error_text or self._latest_install_output_line(output_text) or f"exit code {exit_code}"
+        self._fail_chromium_installation(detail, process=process)
+
+    def _take_chromium_install_state(self):
+        process = self.chromium_install_process
+        resume_scan = self.resume_scan_after_chromium_install
+        canceled = self.chromium_install_canceled
+        error_text = self.chromium_install_error
+        output_text = self.chromium_install_output
+
+        self.chromium_install_process = None
+        self.resume_scan_after_chromium_install = False
+        self.chromium_install_canceled = False
+        self.chromium_install_output = ""
+        self.chromium_install_error = ""
+        return process, resume_scan, canceled, error_text, output_text
+
+    def _fail_chromium_installation(self, detail: str = "", process=None) -> None:
+        if process is None:
+            process, _resume_scan, _canceled, error_text, output_text = self._take_chromium_install_state()
+            detail = detail or error_text or self._latest_install_output_line(output_text)
+
+        detail = detail.strip() or "Failed to start Chromium installer."
+        if process is not None:
+            process.deleteLater()
+
+        self.add_log_event("log_browser_install_failed", "error", {"error": detail})
+        self.set_chromium_install_status("failed", detail, auto_hide_ms=8000)
+        QMessageBox.warning(
+            self,
+            self.text("browser_install_title"),
+            self.text("browser_install_failed_message", error=detail),
+        )
+
+    @staticmethod
+    def _latest_install_output_line(output: str) -> str:
+        for line in reversed((output or "").replace("\r", "\n").split("\n")):
+            cleaned = line.strip()
+            if cleaned:
+                return cleaned[:180]
+        return ""
 
     def flush_log_entries(self) -> None:
         self.log_buffer.flush_pending()
@@ -290,6 +507,9 @@ class MainWindow(QMainWindow):
 
     def refresh_request_status(self) -> None:
         self.state_presenter.refresh_request_status()
+
+    def refresh_chromium_install_banner(self) -> None:
+        self.state_presenter.refresh_chromium_install_banner()
 
     def refresh_runtime_panel(self, note_key: str | None = None) -> None:
         self.state_presenter.refresh_runtime_panel(note_key)

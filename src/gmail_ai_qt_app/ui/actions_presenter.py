@@ -7,6 +7,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from ..services.name_generator import GeneratorOptions, generate_candidates
+from ..services.seed_utils import normalize_seed_value
 
 
 class MainWindowActionsPresenter:
@@ -14,8 +15,10 @@ class MainWindowActionsPresenter:
         self.window = window
 
     def add_name(self) -> None:
-        new_name = self.window.name_input.text().strip().lower()
+        new_name = normalize_seed_value(self.window.name_input.text())
         if not new_name:
+            self.window.name_input.clear()
+            self.window.add_log_event("log_seed_invalid", "error")
             return
 
         if new_name in self.window.runtime_settings.seeds:

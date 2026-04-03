@@ -574,6 +574,31 @@ class MainWindowLayoutBuilder:
         header_layout.addLayout(header_left, 1)
         header_layout.addLayout(header_right)
 
+        install_banner = QFrame()
+        install_banner.setObjectName("InstallBanner")
+        install_banner.setProperty("state", "hidden")
+        install_banner_layout = QHBoxLayout(install_banner)
+        install_banner_layout.setContentsMargins(16, 12, 16, 12)
+        install_banner_layout.setSpacing(10)
+
+        w.install_status_badge = QLabel()
+        w.install_status_badge.setObjectName("InstallStatusBadge")
+
+        w.install_status_label = QLabel()
+        w.install_status_label.setObjectName("InstallStatusText")
+        w.install_status_label.setWordWrap(True)
+
+        w.install_cancel_btn = QPushButton()
+        w.install_cancel_btn.setObjectName("InstallCancelButton")
+        w.install_cancel_btn.setProperty("variant", "neutral")
+        w.install_cancel_btn.setFixedHeight(34)
+
+        install_banner_layout.addWidget(w.install_status_badge)
+        install_banner_layout.addWidget(w.install_status_label, 1)
+        install_banner_layout.addWidget(w.install_cancel_btn)
+
+        w.install_banner = install_banner
+
         cards_row = QHBoxLayout()
         cards_row.setContentsMargins(0, 0, 0, 0)
         cards_row.setSpacing(14)
@@ -613,6 +638,7 @@ class MainWindowLayoutBuilder:
         log_body.addWidget(w.log)
 
         content_layout.addWidget(header)
+        content_layout.addWidget(install_banner)
         content_layout.addLayout(cards_row)
         content_layout.addLayout(plots_row, 1)
         content_layout.addWidget(log_panel, 1)
