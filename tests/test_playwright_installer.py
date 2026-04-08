@@ -13,9 +13,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from gmail_ai_qt_app.services.playwright_installer import (
+    browser_executable_path,
     chromium_executable_path,
     chromium_install_command,
+    compiled_exe_directory,
+    is_chromium_ready,
     is_chromium_installed,
+    playwright_browsers_path,
     provider_requires_chromium,
 )
 
@@ -45,11 +49,60 @@ class PlaywrightInstallerTests(unittest.TestCase):
         assert executable_path is not None
         self.assertTrue(str(executable_path).startswith(str(browsers_path)))
 
+    def test_headless_shell_path_uses_explicit_browser_directory(self) -> None:
+        browsers_path = ROOT / "tests" / "_tmp_browsers"
+
+        with mock.patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": str(browsers_path)}, clear=False):
+            executable_path = browser_executable_path("chromium-headless-shell")
+
+        self.assertIsNotNone(executable_path)
+        assert executable_path is not None
+        self.assertTrue(str(executable_path).startswith(str(browsers_path)))
+
+    def test_compiled_runtime_prefers_exe_local_browser_directory(self) -> None:
+        exe_dir = ROOT / "dist"
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NUITKA_ONEFILE_DIRECTORY": str(exe_dir),
+                "PLAYWRIGHT_BROWSERS_PATH": "",
+            },
+            clear=False,
+        ):
+            self.assertEqual(compiled_exe_directory(), exe_dir)
+            self.assertEqual(playwright_browsers_path(), exe_dir / "playwright-browsers")
+
     def test_missing_browser_directory_reports_not_installed(self) -> None:
         browsers_path = ROOT / "tests" / "_missing_browsers"
 
         with mock.patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": str(browsers_path)}, clear=False):
             self.assertFalse(is_chromium_installed())
+
+    def test_google_browser_requires_full_chromium(self) -> None:
+        def fake_path(browser_name: str):
+            if browser_name == "chromium":
+                return None
+            return mock.Mock(exists=mock.Mock(return_value=True))
+
+        with mock.patch(
+            "gmail_ai_qt_app.services.playwright_installer.browser_executable_path",
+            side_effect=fake_path,
+        ):
+            self.assertFalse(is_chromium_ready("google_browser"))
+
+    def test_headed_playwright_requires_full_chromium(self) -> None:
+        def fake_path(browser_name: str):
+            if browser_name == "chromium":
+                return mock.Mock(exists=mock.Mock(return_value=True))
+            return None
+
+        with mock.patch(
+            "gmail_ai_qt_app.services.playwright_installer.browser_executable_path",
+            side_effect=fake_path,
+        ):
+            self.assertTrue(is_chromium_ready("playwright", browser_headless=False))
+            self.assertFalse(is_chromium_ready("playwright", browser_headless=True))
 
 
 if __name__ == "__main__":

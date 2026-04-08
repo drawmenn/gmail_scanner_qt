@@ -58,7 +58,7 @@ class MainWindowActionsPresenter:
         candidates = generate_candidates(
             GeneratorOptions(
                 source_text=source_text,
-                target_length=int(self.window.generator_length_combo.currentData() or 6),
+                target_length=self.window.generator_length_spin.value() or 6,
                 allow_digits=self.window.generator_digits_check.isChecked(),
                 max_results=self.window.generator_count_spin.value(),
             )

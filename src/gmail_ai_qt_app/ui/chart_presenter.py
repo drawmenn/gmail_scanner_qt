@@ -84,15 +84,14 @@ class MainWindowChartPresenter:
         plot_widget.setBackground("transparent")
         plot_item = plot_widget.getPlotItem()
         plot_item.setMenuEnabled(False)
-        plot_item.showGrid(x=True, y=True, alpha=0.22)
+        plot_item.showGrid(x=False, y=False)
         plot_item.setTitle(title, color="#0f172a", size="12pt")
         plot_item.hideButtons()
 
-        axis_pen = pg.mkPen(axis_color)
         for axis_name in ("left", "bottom"):
             axis = plot_item.getAxis(axis_name)
-            axis.setPen(axis_pen)
-            axis.setTextPen(axis_pen)
+            axis.setPen(None)
+            axis.setTextPen(None)
 
         if y_range is not None:
             plot_widget.setYRange(*y_range, padding=0.06)

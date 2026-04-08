@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from html import unescape
 import re
 import time
 from threading import Event
@@ -41,6 +42,9 @@ class ScanOutcome:
 
 class ScanCanceledError(Exception):
     pass
+
+
+_BROWSER_DEBUG_SNIPPET_MAX = 120
 
 
 PROVIDER_OPTIONS = [
@@ -328,12 +332,18 @@ def run_google_browser_scan(
         proxy_kwargs["proxy"] = {"server": proxy_server}
 
     browser = None
+    context = None
     try:
         ensure_scan_not_canceled(cancel_event)
         with sync_playwright() as playwright:
             ensure_scan_not_canceled(cancel_event)
             try:
-                browser = playwright.chromium.launch(headless=True, **proxy_kwargs)
+                browser = playwright.chromium.launch(
+                    headless=False,
+                    ignore_default_args=["--enable-automation"],
+                    args=["--disable-blink-features=AutomationControlled"],
+                    **proxy_kwargs,
+                )
             except Exception as exc:
                 if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
                     return ScanOutcome(
@@ -343,7 +353,15 @@ def run_google_browser_scan(
                         params={},
                     )
                 raise
-            page = browser.new_page()
+            context = browser.new_context(viewport={"width": 1280, "height": 900}, locale="en-US")
+            context.add_init_script(
+                """
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                """
+            )
+            page = context.new_page()
             ensure_scan_not_canceled(cancel_event)
             page.goto(
                 "https://accounts.google.com/signin/v2/identifier",
@@ -357,7 +375,14 @@ def run_google_browser_scan(
             wait_for_cancellation(3000, cancel_event)
             ensure_scan_not_canceled(cancel_event)
 
-            return parse_google_browser_content(name, page.content())
+            page_html = page.content()
+            return parse_google_browser_content(
+                name,
+                page_html,
+                page_text=extract_browser_page_text(page, page_html),
+                page_url=browser_page_url(page),
+                page_title=browser_page_title(page),
+            )
     except ScanCanceledError:
         raise
     except PlaywrightTimeoutError:
@@ -382,6 +407,11 @@ def run_google_browser_scan(
             params={"name": name, "error": str(exc)},
         )
     finally:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
         if browser is not None:
             try:
                 browser.close()
@@ -389,8 +419,35 @@ def run_google_browser_scan(
                 pass
 
 
-def parse_google_browser_content(name: str, page_html: str) -> ScanOutcome:
-    page_text = (page_html or "").lower()
+def parse_google_browser_content(
+    name: str,
+    page_html: str,
+    *,
+    page_text: str = "",
+    page_url: str = "-",
+    page_title: str = "-",
+) -> ScanOutcome:
+    combined_text = normalize_browser_debug_text(f"{page_text} {page_html}").lower()
+    normalized_url = normalize_browser_debug_text(page_url)
+    normalized_title = normalize_browser_debug_text(page_title)
+
+    rejected_patterns = [
+        "this browser or app may not be secure",
+        "couldn't sign you in",
+        "couldn’t sign you in",
+    ]
+    if "/signin/rejected" in normalized_url.lower() or any(pattern in combined_text for pattern in rejected_patterns):
+        return ScanOutcome(
+            error_delta=1,
+            tag="error",
+            message_key="log_google_browser_rejected_secure_browser",
+            params={
+                "name": name,
+                "url": normalized_url or "-",
+                "title": normalized_title or "-",
+                "snippet": truncate_browser_debug_text(page_text or page_html),
+            },
+        )
 
     not_found_patterns = [
         "couldn't find your google account",
@@ -400,7 +457,7 @@ def parse_google_browser_content(name: str, page_html: str) -> ScanOutcome:
         "that google account doesn't exist",
         "couldn\u2019t find your google account",
     ]
-    if any(pattern in page_text for pattern in not_found_patterns):
+    if any(pattern in combined_text for pattern in not_found_patterns):
         return ScanOutcome(
             checked_delta=1,
             hit_delta=1,
@@ -415,7 +472,7 @@ def parse_google_browser_content(name: str, page_html: str) -> ScanOutcome:
         "welcome",
         "hi,",
     ]
-    if any(pattern in page_text for pattern in taken_patterns):
+    if any(pattern in combined_text for pattern in taken_patterns):
         return ScanOutcome(
             checked_delta=1,
             taken_delta=1,
@@ -427,13 +484,19 @@ def parse_google_browser_content(name: str, page_html: str) -> ScanOutcome:
     return ScanOutcome(
         error_delta=1,
         tag="error",
-        message_key="log_browser_result_unknown",
-        params={"name": name},
+        message_key="log_google_browser_result_unknown",
+        params={
+            "name": name,
+            "url": normalized_url or "-",
+            "title": normalized_title or "-",
+            "snippet": truncate_browser_debug_text(page_text or page_html),
+        },
     )
 
 
 def parse_browser_response(name: str, page, page_html: str, settings: RuntimeSettings) -> ScanOutcome:
-    page_text = page_html.lower()
+    visible_page_text = extract_browser_page_text(page, page_html)
+    page_text = visible_page_text.lower()
 
     available_selector_match = bool(
         settings.browser_available_selector.strip()
@@ -457,11 +520,17 @@ def parse_browser_response(name: str, page, page_html: str, settings: RuntimeSet
 
     available_regex_match = bool(
         settings.browser_available_regex.strip()
-        and re.search(settings.browser_available_regex.strip(), page_html, re.IGNORECASE)
+        and (
+            re.search(settings.browser_available_regex.strip(), page_html, re.IGNORECASE)
+            or re.search(settings.browser_available_regex.strip(), visible_page_text, re.IGNORECASE)
+        )
     )
     taken_regex_match = bool(
         settings.browser_taken_regex.strip()
-        and re.search(settings.browser_taken_regex.strip(), page_html, re.IGNORECASE)
+        and (
+            re.search(settings.browser_taken_regex.strip(), page_html, re.IGNORECASE)
+            or re.search(settings.browser_taken_regex.strip(), visible_page_text, re.IGNORECASE)
+        )
     )
 
     available_match = available_selector_match or available_text_match or available_regex_match
@@ -496,8 +565,14 @@ def parse_browser_response(name: str, page, page_html: str, settings: RuntimeSet
     return ScanOutcome(
         error_delta=1,
         tag="error",
-        message_key="log_browser_result_unknown",
-        params={"name": name},
+        message_key="log_browser_result_unknown_debug",
+        params={
+            "name": name,
+            "url": browser_page_url(page),
+            "title": browser_page_title(page),
+            "rules": describe_browser_rules(settings),
+            "snippet": truncate_browser_debug_text(visible_page_text),
+        },
     )
 
 
@@ -713,3 +788,67 @@ def validate_browser_settings(settings: RuntimeSettings) -> str | None:
     if not has_available_rule and not has_taken_rule:
         return "result rule"
     return None
+
+
+def extract_browser_page_text(page, page_html: str) -> str:
+    try:
+        page_text = page.evaluate("document.body ? document.body.innerText : ''")
+    except Exception:
+        page_text = ""
+
+    normalized_text = normalize_browser_debug_text(page_text)
+    if normalized_text:
+        return normalized_text
+
+    return normalize_browser_debug_text(re.sub(r"<[^>]+>", " ", unescape(page_html or "")))
+
+
+def browser_page_title(page) -> str:
+    try:
+        title = page.title()
+    except Exception:
+        title = ""
+    return normalize_browser_debug_text(title) or "-"
+
+
+def browser_page_url(page) -> str:
+    return normalize_browser_debug_text(getattr(page, "url", "")) or "-"
+
+
+def describe_browser_rules(settings: RuntimeSettings) -> str:
+    available_rules: list[str] = []
+    taken_rules: list[str] = []
+
+    if settings.browser_available_selector.strip():
+        available_rules.append("selector")
+    if settings.browser_available_text.strip():
+        available_rules.append("text")
+    if settings.browser_available_regex.strip():
+        available_rules.append("regex")
+
+    if settings.browser_taken_selector.strip():
+        taken_rules.append("selector")
+    if settings.browser_taken_text.strip():
+        taken_rules.append("text")
+    if settings.browser_taken_regex.strip():
+        taken_rules.append("regex")
+
+    return (
+        f"available[{', '.join(available_rules) or 'none'}], "
+        f"taken[{', '.join(taken_rules) or 'none'}]"
+    )
+
+
+def truncate_browser_debug_text(value: str, max_length: int = _BROWSER_DEBUG_SNIPPET_MAX) -> str:
+    text = normalize_browser_debug_text(value)
+    if not text:
+        return "-"
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3].rstrip() + "..."
+
+
+def normalize_browser_debug_text(value: object) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()

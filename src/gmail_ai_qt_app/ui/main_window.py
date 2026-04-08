@@ -1,8 +1,8 @@
+import os
 from pathlib import Path
 import sys
 
 from PySide6.QtCore import QDateTime, QProcess, QProcessEnvironment, QThread, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 if __package__ in (None, ""):
@@ -14,7 +14,7 @@ if __package__ in (None, ""):
     from gmail_ai_qt_app.models.state import RuntimeSettings
     from gmail_ai_qt_app.services.playwright_installer import (
         chromium_install_command,
-        is_chromium_installed,
+        is_chromium_ready,
         provider_requires_chromium,
     )
     from gmail_ai_qt_app.services.settings_store import RuntimeSettingsStore
@@ -34,7 +34,7 @@ else:
     from ..models.state import RuntimeSettings
     from ..services.playwright_installer import (
         chromium_install_command,
-        is_chromium_installed,
+        is_chromium_ready,
         provider_requires_chromium,
     )
     from ..services.settings_store import RuntimeSettingsStore
@@ -49,6 +49,14 @@ else:
     from .state_presenter import MainWindowStatePresenter
     from .styles import main_window_qss
     from .translation_presenter import MainWindowTranslationPresenter
+
+
+def _is_compiled_runtime() -> bool:
+    return bool(
+        getattr(sys, "frozen", False)
+        or globals().get("__compiled__") is not None
+        or os.environ.get("NUITKA_ONEFILE_DIRECTORY", "").strip()
+    )
 
 
 class MainWindow(QMainWindow):
@@ -83,24 +91,32 @@ class MainWindow(QMainWindow):
             "history": {"checked": [], "hit": [], "rate": []},
         }
 
-        self.resize(1420, 920)
-        self.setMinimumSize(1180, 760)
-        self.setStyleSheet(self.qss())
+        self.resize(1240, 800)
+        self.setMinimumSize(960, 660)
+        self.setStyleSheet(main_window_qss())
 
         self.build_ui()
-        self.log_buffer = LogBuffer(
-            self.log,
-            self._translate_log_message,
-            self._translate_log_tag,
-        )
+        self._sync_insights_panel_height()
+
+        # 初始化presenters
         self.actions_presenter = MainWindowActionsPresenter(self)
         self.chart_presenter = MainWindowChartPresenter(self)
         self.runtime_presenter = MainWindowRuntimePresenter(self)
         self.settings_presenter = MainWindowSettingsPresenter(self)
         self.state_presenter = MainWindowStatePresenter(self)
         self.translation_presenter = MainWindowTranslationPresenter(self)
+        self.load_runtime_settings_into_controls()
+
+        # 假设layout_builder定义了self.log
+        self.log_buffer = LogBuffer(
+            self.log,
+            self._translate_log_message,
+            self._translate_log_tag,
+        )
+
         self.apply_translations()
         self.configure_plots()
+
         self.auto_review_timer = QTimer(self)
         self.auto_review_timer.setSingleShot(True)
         self.auto_review_timer.timeout.connect(self.run_auto_review_action)
@@ -124,62 +140,7 @@ class MainWindow(QMainWindow):
         self.scanner_thread.finished.connect(self.worker.deleteLater)
         self.scanner_thread.start()
 
-        self.start_btn.clicked.connect(self.start)
-        self.pause_btn.clicked.connect(self.pause)
-        self.stop_btn.clicked.connect(self.stop)
-        self.install_cancel_btn.clicked.connect(self.cancel_chromium_installation)
-        self.add_btn.clicked.connect(self.add_name)
-        self.remove_btn.clicked.connect(self.remove_selected_name)
-        self.name_list.installEventFilter(self)
-        self.mark_available_btn.clicked.connect(lambda: self.submit_manual_decision("available"))
-        self.mark_taken_btn.clicked.connect(lambda: self.submit_manual_decision("taken"))
-        self.mark_hold_btn.clicked.connect(lambda: self.submit_manual_decision("hold"))
-        self.skip_candidate_btn.clicked.connect(self.skip_manual_candidate)
-        self.copy_candidate_btn.clicked.connect(self.copy_current_candidate)
-        self.open_review_page_btn.clicked.connect(self.open_manual_review_page)
-        self.export_csv_btn.clicked.connect(self.export_review_records)
-        self.name_input.returnPressed.connect(self.add_name)
-        self.generator_source_input.returnPressed.connect(self.generate_name_pool)
-        self.proxy_check.toggled.connect(self.sync_proxy_settings)
-        self.proxy_input.textChanged.connect(self.sync_proxy_settings)
-        self.language_combo.currentIndexChanged.connect(self.change_language)
-        self.provider_combo.currentIndexChanged.connect(self.change_provider)
-        self.custom_method_combo.currentIndexChanged.connect(self.sync_custom_provider_settings)
-        self.custom_url_input.textChanged.connect(self.sync_custom_provider_settings)
-        self.custom_param_input.textChanged.connect(self.sync_custom_provider_settings)
-        self.custom_status_input.textChanged.connect(self.sync_custom_provider_settings)
-        self.custom_available_input.textChanged.connect(self.sync_custom_provider_settings)
-        self.custom_taken_input.textChanged.connect(self.sync_custom_provider_settings)
-        self.custom_available_regex_input.textChanged.connect(self.sync_custom_provider_settings)
-        self.custom_taken_regex_input.textChanged.connect(self.sync_custom_provider_settings)
-        self.custom_headers_input.textChanged.connect(self.sync_custom_provider_settings)
-        self.custom_body_input.textChanged.connect(self.sync_custom_provider_settings)
-        self.browser_url_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_input_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_value_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_submit_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_available_selector_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_available_text_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_available_regex_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_taken_selector_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_taken_text_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_taken_regex_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_headers_input.textChanged.connect(self.sync_browser_provider_settings)
-        self.browser_timeout_spin.valueChanged.connect(self.sync_browser_provider_settings)
-        self.browser_delay_spin.valueChanged.connect(self.sync_browser_provider_settings)
-        self.browser_headless_check.toggled.connect(self.sync_browser_provider_settings)
-        self.auto_review_check.toggled.connect(self.sync_auto_review_settings)
-        self.auto_review_action_combo.currentIndexChanged.connect(self.sync_auto_review_settings)
-        self.generate_candidates_btn.clicked.connect(self.generate_name_pool)
-
-        self.available_shortcut = QShortcut(QKeySequence("A"), self)
-        self.available_shortcut.activated.connect(lambda: self.submit_manual_decision("available"))
-        self.taken_shortcut = QShortcut(QKeySequence("T"), self)
-        self.taken_shortcut.activated.connect(lambda: self.submit_manual_decision("taken"))
-        self.hold_shortcut = QShortcut(QKeySequence("H"), self)
-        self.hold_shortcut.activated.connect(lambda: self.submit_manual_decision("hold"))
-        self.next_shortcut = QShortcut(QKeySequence("N"), self)
-        self.next_shortcut.activated.connect(self.skip_manual_candidate)
+        self._connect_ui_signals()
 
         self.refresh_seed_summary()
         self.sync_provider_settings()
@@ -193,6 +154,7 @@ class MainWindow(QMainWindow):
         self.refresh_review_panel()
         self.refresh_runtime_panel("runtime_note_stopped")
         self.add_log_event("log_dashboard_ready", "info")
+        QTimer.singleShot(0, self.maybe_request_chromium_on_launch)
 
     def text(self, key: str, **params) -> str:
         return translate(self.runtime_settings.language, key, **params)
@@ -204,7 +166,118 @@ class MainWindow(QMainWindow):
         return self.text(f"log_tag_{tag}")
 
     def build_ui(self) -> None:
-        MainWindowLayoutBuilder(self).build()
+        builder = MainWindowLayoutBuilder(self)
+        central_widget = builder.build()
+        self.setCentralWidget(central_widget)
+
+    def _sync_insights_panel_height(self) -> None:
+        panel = getattr(self, "insights_panel", None)
+        if panel is None:
+            return
+
+        panel.setMaximumHeight(max(360, self.height() - 355))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._sync_insights_panel_height()
+
+    def load_runtime_settings_into_controls(self) -> None:
+        settings = self.runtime_settings
+        self.name_list.clear()
+        self.name_list.addItems(settings.seeds)
+
+        self.proxy_check.setChecked(settings.proxy_enabled)
+        self.proxy_input.setText(settings.proxy_url)
+
+        self.custom_url_input.setText(settings.custom_url)
+        self.custom_param_input.setText(settings.custom_param_name)
+        self.custom_status_input.setText(settings.custom_status_codes)
+        self.custom_headers_input.setPlainText(settings.custom_headers)
+        self.custom_body_input.setPlainText(settings.custom_body_template)
+        self.custom_available_input.setText(settings.custom_available_keyword)
+        self.custom_taken_input.setText(settings.custom_taken_keyword)
+        self.custom_available_regex_input.setText(settings.custom_available_regex)
+        self.custom_taken_regex_input.setText(settings.custom_taken_regex)
+
+        self.browser_headless_check.setChecked(settings.browser_headless)
+        self.browser_url_input.setText(settings.browser_url)
+        self.browser_input_input.setText(settings.browser_input_selector)
+        self.browser_value_input.setText(settings.browser_value_template or "{username}")
+        self.browser_submit_input.setText(settings.browser_submit_selector)
+        self.browser_timeout_spin.setValue(int(settings.browser_timeout_ms or 10_000))
+        self.browser_delay_spin.setValue(int(settings.browser_delay_ms or 800))
+        self.browser_available_selector_input.setText(settings.browser_available_selector)
+        self.browser_available_text_input.setText(settings.browser_available_text)
+        self.browser_available_regex_input.setText(settings.browser_available_regex)
+        self.browser_taken_selector_input.setText(settings.browser_taken_selector)
+        self.browser_taken_text_input.setText(settings.browser_taken_text)
+        self.browser_taken_regex_input.setText(settings.browser_taken_regex)
+        self.browser_headers_input.setPlainText(settings.browser_headers)
+
+        self.auto_review_check.setChecked(settings.manual_auto_enabled)
+
+    def _connect_ui_signals(self) -> None:
+        self.name_list.installEventFilter(self)
+
+        self.start_btn.clicked.connect(self.start)
+        self.pause_btn.clicked.connect(self.pause)
+        self.stop_btn.clicked.connect(self.stop)
+
+        self.language_combo.currentIndexChanged.connect(self.change_language)
+        self.provider_combo.currentIndexChanged.connect(self.change_provider)
+
+        self.add_btn.clicked.connect(self.add_name)
+        self.remove_btn.clicked.connect(self.remove_selected_name)
+        self.generate_candidates_btn.clicked.connect(self.generate_name_pool)
+        self.name_input.returnPressed.connect(self.add_name)
+
+        self.mark_available_btn.clicked.connect(lambda: self.submit_manual_decision("available"))
+        self.mark_taken_btn.clicked.connect(lambda: self.submit_manual_decision("taken"))
+        self.mark_hold_btn.clicked.connect(lambda: self.submit_manual_decision("hold"))
+        self.skip_candidate_btn.clicked.connect(self.skip_manual_candidate)
+        self.copy_candidate_btn.clicked.connect(self.copy_current_candidate)
+        self.open_review_page_btn.clicked.connect(self.open_manual_review_page)
+        self.export_csv_btn.clicked.connect(self.export_review_records)
+
+        self.auto_review_check.toggled.connect(self.sync_auto_review_settings)
+        self.auto_review_action_combo.currentIndexChanged.connect(self.sync_auto_review_settings)
+
+        self.proxy_check.toggled.connect(self.sync_proxy_settings)
+        self.proxy_input.editingFinished.connect(self.sync_proxy_settings)
+
+        self.custom_method_combo.currentIndexChanged.connect(self.sync_custom_provider_settings)
+        for widget in (
+            self.custom_url_input,
+            self.custom_param_input,
+            self.custom_status_input,
+            self.custom_available_input,
+            self.custom_taken_input,
+            self.custom_available_regex_input,
+            self.custom_taken_regex_input,
+        ):
+            widget.editingFinished.connect(self.sync_custom_provider_settings)
+        self.custom_headers_input.textChanged.connect(self.sync_custom_provider_settings)
+        self.custom_body_input.textChanged.connect(self.sync_custom_provider_settings)
+
+        self.browser_headless_check.toggled.connect(self.sync_browser_provider_settings)
+        self.browser_timeout_spin.valueChanged.connect(self.sync_browser_provider_settings)
+        self.browser_delay_spin.valueChanged.connect(self.sync_browser_provider_settings)
+        for widget in (
+            self.browser_url_input,
+            self.browser_input_input,
+            self.browser_value_input,
+            self.browser_submit_input,
+            self.browser_available_selector_input,
+            self.browser_available_text_input,
+            self.browser_available_regex_input,
+            self.browser_taken_selector_input,
+            self.browser_taken_text_input,
+            self.browser_taken_regex_input,
+        ):
+            widget.editingFinished.connect(self.sync_browser_provider_settings)
+        self.browser_headers_input.textChanged.connect(self.sync_browser_provider_settings)
+
+        self.install_cancel_btn.clicked.connect(self.cancel_chromium_installation)
 
     def apply_translations(self) -> None:
         self.translation_presenter.apply_translations()
@@ -223,6 +296,25 @@ class MainWindow(QMainWindow):
             params=dict(params or {}),
         )
         self.log_buffer.add_entry(entry)
+        self._handle_runtime_browser_missing(message_key)
+
+    def _handle_runtime_browser_missing(self, message_key: str) -> None:
+        if message_key != "log_browser_chromium_missing":
+            return
+        if not provider_requires_chromium(self.runtime_settings.provider):
+            return
+
+        resume_scan = self.runtime_state == "running"
+        if resume_scan:
+            self.pause()
+        self.request_chromium_install(resume_scan=resume_scan, skip_installed_check=True)
+
+    def maybe_request_chromium_on_launch(self) -> None:
+        if not _is_compiled_runtime():
+            return
+        if not provider_requires_chromium(self.runtime_settings.provider):
+            return
+        self.request_chromium_install(resume_scan=False)
 
     def set_chromium_install_status(
         self,
@@ -247,12 +339,23 @@ class MainWindow(QMainWindow):
         if not provider_requires_chromium(self.runtime_settings.provider):
             return True
 
+        return self.request_chromium_install(resume_scan=True)
+
+    def request_chromium_install(
+        self,
+        *,
+        resume_scan: bool,
+        skip_installed_check: bool = False,
+    ) -> bool:
         if self.chromium_install_process is not None:
-            self.resume_scan_after_chromium_install = True
+            self.resume_scan_after_chromium_install = self.resume_scan_after_chromium_install or resume_scan
             self.add_log_event("log_browser_install_running", "info")
             return False
 
-        if is_chromium_installed():
+        if not skip_installed_check and is_chromium_ready(
+            self.runtime_settings.provider,
+            self.runtime_settings.browser_headless,
+        ):
             return True
 
         install_command = chromium_install_command()
@@ -281,7 +384,7 @@ class MainWindow(QMainWindow):
             )
             return False
 
-        self.start_chromium_installation(install_command, resume_scan=True)
+        self.start_chromium_installation(install_command, resume_scan=resume_scan)
         return False
 
     def start_chromium_installation(self, install_command, resume_scan: bool) -> None:
@@ -299,6 +402,9 @@ class MainWindow(QMainWindow):
         environment = QProcessEnvironment.systemEnvironment()
         for key, value in install_command.env.items():
             environment.insert(key, value)
+        browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+        if browsers_path:
+            environment.insert("PLAYWRIGHT_BROWSERS_PATH", browsers_path)
         process.setProcessEnvironment(environment)
 
         process.readyRead.connect(self._read_chromium_install_output)
@@ -365,12 +471,15 @@ class MainWindow(QMainWindow):
         if (
             exit_status == QProcess.ExitStatus.NormalExit
             and exit_code == 0
-            and is_chromium_installed()
+            and is_chromium_ready(
+                self.runtime_settings.provider,
+                self.runtime_settings.browser_headless,
+            )
         ):
             self.add_log_event("log_browser_install_finished", "info")
             self.set_chromium_install_status("finished", auto_hide_ms=5000)
             if resume_scan:
-                self.runtime_presenter.start(skip_browser_check=True)
+                self.start()
             return
 
         detail = error_text or self._latest_install_output_line(output_text) or f"exit code {exit_code}"
@@ -528,18 +637,14 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, event) -> bool:
         from PySide6.QtCore import QEvent, Qt
-        if obj is self.name_list and event.type() == QEvent.Type.KeyPress:
-            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+        if obj is self.name_list and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
                 self.remove_selected_name()
                 return True
         return super().eventFilter(obj, event)
-
-    def qss(self) -> str:
-        return main_window_qss()
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    raise SystemExit(app.exec())
+    sys.exit(app.exec())

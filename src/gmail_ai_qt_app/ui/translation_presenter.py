@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..i18n import available_languages
 from ..services.providers import available_providers
 
 
@@ -15,11 +16,7 @@ class MainWindowTranslationPresenter:
         w.sidebar_title_label.setText(w.text("brand_title"))
         w.sidebar_subtitle_label.setText(w.text("brand_subtitle"))
 
-        w.display_title_label.setText(w.text("display_title"))
-        w.display_subtitle_label.setText(w.text("display_subtitle"))
         w.language_label.setText(w.text("display_label"))
-        w.provider_title_label.setText(w.text("provider_title"))
-        w.provider_subtitle_label.setText(w.text("provider_subtitle"))
         w.provider_label.setText(w.text("provider_label"))
         w.custom_title_label.setText(w.text("custom_title"))
         w.custom_subtitle_label.setText(w.text("custom_subtitle"))
@@ -48,8 +45,6 @@ class MainWindowTranslationPresenter:
         w.browser_taken_text_label.setText(w.text("browser_taken_text_label"))
         w.browser_taken_regex_label.setText(w.text("browser_taken_regex_label"))
         w.browser_headers_label.setText(w.text("browser_headers_label"))
-        w.proxy_title_label.setText(w.text("connection_title"))
-        w.proxy_subtitle_label.setText(w.text("connection_subtitle"))
         w.names_title_label.setText(w.text("name_pool_title"))
         w.names_subtitle_label.setText(w.text("name_pool_subtitle"))
         w.generator_title_label.setText(w.text("generator_title"))
@@ -80,6 +75,7 @@ class MainWindowTranslationPresenter:
 
         w.proxy_check.setText(w.text("proxy_enabled"))
         w.proxy_input.setPlaceholderText(w.text("proxy_placeholder"))
+        self.refresh_language_options()
         self.refresh_custom_method_options()
         w.custom_url_input.setPlaceholderText(w.text("custom_url_placeholder"))
         w.custom_param_input.setPlaceholderText(w.text("custom_param_placeholder"))
@@ -120,47 +116,64 @@ class MainWindowTranslationPresenter:
         w.rate_card.title_label.setText(w.text("metric_rate_title"))
         w.rate_card.subtitle_label.setText(w.text("metric_rate_subtitle"))
 
-        w.activity_panel_title_label.setText(w.text("activity_panel_title"))
-        w.activity_panel_subtitle_label.setText(w.text("activity_panel_subtitle"))
-        w.rate_panel_title_label.setText(w.text("rate_panel_title"))
-        w.rate_panel_subtitle_label.setText(w.text("rate_panel_subtitle"))
-        w.log_panel_title_label.setText(w.text("log_panel_title"))
-        w.log_panel_subtitle_label.setText(w.text("log_panel_subtitle"))
+        w.insights_panel_title_label.setText(w.text("insights_panel_title"))
+        w.insights_panel_subtitle_label.setText(w.text("insights_panel_subtitle"))
+        w.insights_tabs.setTabText(0, w.text("insights_tab_activity"))
+        w.insights_tabs.setTabText(1, w.text("insights_tab_rate"))
+        w.insights_tabs.setTabText(2, w.text("insights_tab_log"))
         w.log.setPlaceholderText(w.text("log_placeholder"))
         w.refresh_metric_labels()
         w.refresh_request_status()
         w.state_presenter.refresh_chromium_install_banner()
         w.refresh_review_panel()
 
-    def refresh_provider_options(self) -> None:
-        current_provider = self.window.provider_combo.currentData()
-        for index, provider in enumerate(available_providers()):
-            self.window.provider_combo.setItemText(index, self.window.text(provider.label_key))
+    def refresh_language_options(self) -> None:
+        current_language = self.window.runtime_settings.language
+        combo = self.window.language_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for language_code, language_label in available_languages():
+            combo.addItem(language_label, language_code)
 
-        restored_index = self.window.provider_combo.findData(current_provider)
-        if restored_index >= 0:
-            self.window.provider_combo.setCurrentIndex(restored_index)
+        restored_index = combo.findData(current_language)
+        combo.setCurrentIndex(restored_index if restored_index >= 0 else 0)
+        combo.blockSignals(False)
+
+    def refresh_provider_options(self) -> None:
+        current_provider = self.window.runtime_settings.provider
+        combo = self.window.provider_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for provider in available_providers():
+            combo.addItem(self.window.text(provider.label_key), provider.code)
+
+        restored_index = combo.findData(current_provider)
+        combo.setCurrentIndex(restored_index if restored_index >= 0 else 0)
+        combo.blockSignals(False)
 
     def refresh_custom_method_options(self) -> None:
-        current_method = self.window.custom_method_combo.currentData()
-        for index, method in enumerate(("GET", "POST")):
-            self.window.custom_method_combo.setItemText(
-                index,
-                self.window.text(f"custom_method_{method.lower()}"),
-            )
+        current_method = self.window.runtime_settings.custom_method
+        combo = self.window.custom_method_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for method in ("GET", "POST"):
+            combo.addItem(self.window.text(f"custom_method_{method.lower()}"), method)
 
-        restored_index = self.window.custom_method_combo.findData(current_method)
-        if restored_index >= 0:
-            self.window.custom_method_combo.setCurrentIndex(restored_index)
+        restored_index = combo.findData(current_method)
+        combo.setCurrentIndex(restored_index if restored_index >= 0 else 0)
+        combo.blockSignals(False)
 
     def refresh_auto_review_options(self) -> None:
-        current_action = self.window.auto_review_action_combo.currentData()
-        for index, action in enumerate(self.window.AUTO_REVIEW_ACTIONS):
-            self.window.auto_review_action_combo.setItemText(
-                index,
+        current_action = self.window.runtime_settings.manual_auto_action
+        combo = self.window.auto_review_action_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for action in self.window.AUTO_REVIEW_ACTIONS:
+            combo.addItem(
                 self.window.text(f"review_auto_action_{action}"),
+                action,
             )
 
-        restored_index = self.window.auto_review_action_combo.findData(current_action)
-        if restored_index >= 0:
-            self.window.auto_review_action_combo.setCurrentIndex(restored_index)
+        restored_index = combo.findData(current_action)
+        combo.setCurrentIndex(restored_index if restored_index >= 0 else 0)
+        combo.blockSignals(False)

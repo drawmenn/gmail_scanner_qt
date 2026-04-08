@@ -83,4 +83,4 @@ dist/
   playwright-browsers/
 ```
 
-Without that `playwright-browsers` folder, the `Playwright Page` and `Google Browser` providers will report that Chromium is missing.
+When the packaged app starts and the saved provider is browser-based, it will prompt to install Chromium into `playwright-browsers` automatically if that folder is missing.

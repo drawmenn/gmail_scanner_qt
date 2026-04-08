@@ -8,13 +8,26 @@ from PySide6.QtWidgets import QApplication
 from .ui.main_window import MainWindow
 
 
+def _compiled_exe_directory() -> Path | None:
+    onefile_directory = os.environ.get("NUITKA_ONEFILE_DIRECTORY", "").strip()
+    if onefile_directory:
+        return Path(onefile_directory)
+
+    is_compiled = bool(getattr(sys, "frozen", False) or globals().get("__compiled__") is not None)
+    executable = (getattr(sys, "executable", "") or "").strip()
+    if is_compiled and executable:
+        return Path(executable).resolve().parent
+    return None
+
+
 def _setup_playwright_browsers_path() -> None:
     """Point Playwright to a browsers folder beside the exe when frozen."""
-    if not getattr(sys, "frozen", False):
+    exe_dir = _compiled_exe_directory()
+    if exe_dir is None:
         return
-    exe_dir = os.environ.get("NUITKA_ONEFILE_PARENT", os.path.dirname(sys.executable))
-    browsers_path = os.path.join(exe_dir, "playwright-browsers")
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path
+
+    browsers_path = Path(exe_dir) / "playwright-browsers"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
 
 
 def _app_icon() -> QIcon:
