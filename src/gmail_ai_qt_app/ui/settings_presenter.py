@@ -15,6 +15,7 @@ class MainWindowSettingsPresenter:
         self.window.refresh_metric_labels()
         self.window.refresh_custom_provider_panel()
         self.window.refresh_browser_provider_panel()
+        self.window.refresh_chromium_install_banner()
         self.window.refresh_review_panel()
         self.window.update_auto_review_timer()
 
@@ -83,6 +84,7 @@ class MainWindowSettingsPresenter:
             }
         )
         self.window.refresh_browser_provider_panel()
+        self.window.refresh_chromium_install_banner()
 
     def sync_auto_review_settings(self) -> None:
         action = self.window.auto_review_action_combo.currentData()

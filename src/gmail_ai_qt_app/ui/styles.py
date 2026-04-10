@@ -154,8 +154,12 @@ QLabel#PanelTitle:hover {
             background: transparent;
         }
 
-        QTabWidget#MainTabs::pane {
-            top: 6px;
+        QWidget#MainTabShell {
+            background: transparent;
+        }
+
+        QStackedWidget#MainTabs {
+            background: transparent;
         }
 
         QTabBar#MainTabBar {
@@ -169,7 +173,7 @@ QLabel#PanelTitle:hover {
             border: 1px solid #d7e2ec;
             border-radius: 13px;
             padding: 8px 18px;
-            margin-right: 8px;
+            margin-right: 6px;
             min-width: 74px;
             font-size: 13px;
             font-weight: 700;
@@ -187,6 +191,10 @@ QLabel#PanelTitle:hover {
             );
             color: #125d63;
             border: 1px solid #b7d8d1;
+        }
+
+        QTabBar#MainTabBar::tab:first {
+            margin-left: 0;
         }
 
         QTabWidget#InsightsTabs::pane {
@@ -288,15 +296,40 @@ QLabel#RateLabel {
             color: #13283d;
         }
 
+        QWidget#ChromiumStatusCorner {
+            background: transparent;
+        }
+
         QFrame#InstallBanner {
-            border-radius: 12px;
-            border: 1px solid #d7dcca;
-            background: #eef3ea;
+            border-radius: 13px;
+            border: 1px solid #d7e2ec;
+            background: rgba(255, 255, 255, 0.82);
         }
 
         QFrame#InstallBanner[state="hidden"] {
             background: transparent;
             border: none;
+        }
+
+        QFrame#InstallBanner[state="neutral"] {
+            background: rgba(255, 255, 255, 0.82);
+            border: 1px solid #d7e2ec;
+        }
+
+        QFrame#InstallBanner[state="missing"] {
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #fff8e9, stop:1 #fff0d6
+            );
+            border: 1px solid #e7cb90;
+        }
+
+        QFrame#InstallBanner[state="partial"] {
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #fff6df, stop:1 #feecd1
+            );
+            border: 1px solid #e5c17e;
         }
 
         QFrame#InstallBanner[state="running"] {
@@ -332,8 +365,14 @@ QLabel#RateLabel {
         }
 
         QLabel#InstallStatusBadge {
-            border-radius: 9px;
-            padding: 4px 7px;
+            border-radius: 8px;
+            padding: 1px 5px;
+            font-size: 9px;
+            font-weight: 700;
+        }
+
+        QLabel#ChromiumStripTitle {
+            color: #17364b;
             font-size: 10px;
             font-weight: 700;
         }
@@ -362,9 +401,50 @@ QLabel#RateLabel {
             border: 1px solid #e8c276;
         }
 
+        QFrame#InstallBanner[state="missing"] QLabel#InstallStatusBadge,
+        QFrame#InstallBanner[state="partial"] QLabel#InstallStatusBadge {
+            background: #ffefc8;
+            color: #8a530c;
+            border: 1px solid #e6c171;
+        }
+
+        QFrame#InstallBanner[state="neutral"] QLabel#InstallStatusBadge {
+            background: #edf2f7;
+            color: #45566b;
+            border: 1px solid #d4dde7;
+        }
+
         QLabel#InstallStatusText {
             color: #334556;
             line-height: 1.35;
+            font-size: 10px;
+            font-weight: 600;
+        }
+
+        QLabel#ChromiumStripMeta {
+            color: #617588;
+            font-size: 9px;
+        }
+
+        QLabel#ChromiumStripPercent {
+            color: #486072;
+            font-size: 9px;
+            font-weight: 700;
+            min-width: 22px;
+        }
+
+        QProgressBar#ChromiumStripProgress {
+            background: rgba(214, 225, 232, 0.88);
+            border: none;
+            border-radius: 3px;
+        }
+
+        QProgressBar#ChromiumStripProgress::chunk {
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #2b8a72, stop:1 #36b67b
+            );
+            border-radius: 3px;
         }
 
         QLabel#PageSubtitle, QLabel#ContentSubtitle, QLabel#MetricSubtitle {
@@ -508,8 +588,10 @@ QPushButton[variant="danger"] {
         }
 
         QPushButton#InstallCancelButton {
-            min-height: 26px;
-            padding: 0 8px;
+            min-height: 20px;
+            padding: 0 7px;
+            border-radius: 7px;
+            font-size: 10px;
         }
 
         QLineEdit, QListWidget, QTextEdit, QComboBox, QSpinBox {

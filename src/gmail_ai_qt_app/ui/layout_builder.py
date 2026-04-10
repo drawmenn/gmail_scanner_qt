@@ -13,11 +13,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QSpacerItem,
     QSpinBox,
+    QStackedWidget,
+    QTabBar,
     QTabWidget,
     QTextEdit,
     QToolButton,
@@ -49,12 +52,23 @@ class MainWindowLayoutBuilder:
         page_layout.setSpacing(16)
 
         # 创建标签页控件
-        tabs = QTabWidget()
-        tabs.setObjectName("MainTabs")
-        tabs.setDocumentMode(True)
-        tabs.tabBar().setObjectName("MainTabBar")
-        tabs.tabBar().setDrawBase(False)
-        tabs.tabBar().setCursor(Qt.CursorShape.PointingHandCursor)
+        main_tab_shell = QWidget()
+        main_tab_shell.setObjectName("MainTabShell")
+        main_tab_shell_layout = QVBoxLayout(main_tab_shell)
+        main_tab_shell_layout.setContentsMargins(0, 0, 0, 0)
+        main_tab_shell_layout.setSpacing(8)
+
+        main_tab_row = QHBoxLayout()
+        main_tab_row.setContentsMargins(0, 0, 0, 0)
+        main_tab_row.setSpacing(6)
+
+        tab_bar = QTabBar()
+        tab_bar.setObjectName("MainTabBar")
+        tab_bar.setDocumentMode(True)
+        tab_bar.setDrawBase(False)
+        tab_bar.setCursor(Qt.CursorShape.PointingHandCursor)
+        tab_bar.setExpanding(False)
+        self.main_window.main_tab_bar = tab_bar
 
         # 第一标签：设置
         settings_tab = QWidget()
@@ -73,7 +87,7 @@ class MainWindowLayoutBuilder:
         settings_layout.addWidget(self._build_browser_section())
         settings_layout.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
 
-        tabs.addTab(settings_tab, "设置")
+        tab_bar.addTab("设置")
 
         # 第二标签：监控
         monitor_tab = QWidget()
@@ -90,13 +104,87 @@ class MainWindowLayoutBuilder:
         monitor_layout.addWidget(self._build_insights_panel())
         monitor_layout.addStretch(1)
 
-        tabs.addTab(monitor_tab, "监控")
+        tab_bar.addTab("监控")
 
-        page_layout.addWidget(tabs)
+        pages = QStackedWidget()
+        pages.setObjectName("MainTabs")
+        pages.addWidget(settings_tab)
+        pages.addWidget(monitor_tab)
+        pages.setCurrentIndex(0)
+        tab_bar.currentChanged.connect(pages.setCurrentIndex)
+        self.main_window.main_tabs = pages
+
+        main_tab_row.addWidget(tab_bar, 0, Qt.AlignmentFlag.AlignVCenter)
+        main_tab_row.addWidget(self._build_chromium_status_strip(), 1)
+        main_tab_shell_layout.addLayout(main_tab_row)
+        main_tab_shell_layout.addWidget(pages, 1)
+        page_layout.addWidget(main_tab_shell)
 
         scroll_area.setWidget(page)
         root_layout.addWidget(scroll_area)
         return central_widget
+
+    def _build_chromium_status_strip(self) -> QWidget:
+        container = QWidget()
+        container.setObjectName("ChromiumStatusCorner")
+        container.setMinimumWidth(320)
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.main_window.chromium_status_corner = container
+
+        container_layout = QHBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+
+        self.main_window.install_banner = QFrame()
+        self.main_window.install_banner.setObjectName("InstallBanner")
+        self.main_window.install_banner.setProperty("state", "neutral")
+        self.main_window.install_banner.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.main_window.install_banner.setMinimumHeight(34)
+
+        strip_layout = QHBoxLayout(self.main_window.install_banner)
+        strip_layout.setContentsMargins(12, 4, 12, 4)
+        strip_layout.setSpacing(6)
+
+        self.main_window.chromium_strip_title_label = QLabel()
+        self.main_window.chromium_strip_title_label.setObjectName("ChromiumStripTitle")
+        self.main_window.install_status_badge = QLabel()
+        self.main_window.install_status_badge.setObjectName("InstallStatusBadge")
+        self.main_window.install_status_label = QLabel()
+        self.main_window.install_status_label.setObjectName("InstallStatusText")
+        self.main_window.install_status_label.setWordWrap(False)
+        self.main_window.install_status_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.main_window.chromium_status_meta_label = QLabel()
+        self.main_window.chromium_status_meta_label.setObjectName("ChromiumStripMeta")
+        self.main_window.chromium_status_meta_label.setWordWrap(False)
+        self.main_window.chromium_status_meta_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.main_window.chromium_status_progress = QProgressBar()
+        self.main_window.chromium_status_progress.setObjectName("ChromiumStripProgress")
+        self.main_window.chromium_status_progress.setTextVisible(False)
+        self.main_window.chromium_status_progress.setFixedHeight(5)
+        self.main_window.chromium_status_progress.setFixedWidth(74)
+        self.main_window.chromium_status_progress_label = QLabel()
+        self.main_window.chromium_status_progress_label.setObjectName("ChromiumStripPercent")
+        self.main_window.install_cancel_btn = QPushButton()
+        self.main_window.install_cancel_btn.setObjectName("InstallCancelButton")
+        self.main_window.install_cancel_btn.setProperty("variant", "neutral")
+        self.main_window.install_cancel_btn.setMinimumWidth(48)
+
+        strip_layout.addWidget(self.main_window.chromium_strip_title_label)
+        strip_layout.addWidget(self.main_window.install_status_badge)
+        strip_layout.addWidget(self.main_window.install_status_label, 2)
+        strip_layout.addWidget(self.main_window.chromium_status_meta_label, 3)
+        strip_layout.addWidget(self.main_window.chromium_status_progress)
+        strip_layout.addWidget(self.main_window.chromium_status_progress_label)
+        strip_layout.addWidget(self.main_window.install_cancel_btn)
+
+        container_layout.addWidget(self.main_window.install_banner)
+        return container
 
     def _build_brand_card(self) -> QFrame:
         card = self._panel()
@@ -506,26 +594,6 @@ class MainWindowLayoutBuilder:
         header.addLayout(title_column, 1)
         header.addLayout(badge_row)
         layout.addLayout(header)
-
-        self.main_window.install_banner = QFrame()
-        self.main_window.install_banner.setObjectName("InstallBanner")
-        self.main_window.install_status_badge = QLabel()
-        self.main_window.install_status_badge.setObjectName("InstallStatusBadge")
-        self.main_window.install_status_label = QLabel()
-        self.main_window.install_status_label.setObjectName("InstallStatusText")
-        self.main_window.install_status_label.setWordWrap(True)
-        self.main_window.install_cancel_btn = QPushButton()
-        self.main_window.install_cancel_btn.setObjectName("InstallCancelButton")
-        self.main_window.install_cancel_btn.setProperty("variant", "neutral")
-
-        install_layout = QHBoxLayout(self.main_window.install_banner)
-        install_layout.setContentsMargins(12, 8, 12, 8)
-        install_layout.setSpacing(8)
-        install_layout.addWidget(self.main_window.install_status_badge)
-        install_layout.addWidget(self.main_window.install_status_label, 1)
-        install_layout.addWidget(self.main_window.install_cancel_btn)
-        self.main_window.install_banner.setVisible(False)
-        layout.addWidget(self.main_window.install_banner)
 
         metrics = QGridLayout()
         metrics.setContentsMargins(0, 0, 0, 0)

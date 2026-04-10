@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 
 _CHROMIUM_PROVIDERS = frozenset({"playwright", "google_browser"})
+_INSTALL_PROGRESS_PERCENT_PATTERN = re.compile(r"(?<!\d)(100|[1-9]?\d)%")
 _BROWSER_EXECUTABLE_TOKENS = {
     "chromium": {
         "linux-x64": ("chrome-linux64", "chrome"),
@@ -44,6 +46,16 @@ class PlaywrightInstallCommand:
     program: str
     arguments: tuple[str, ...]
     env: dict[str, str]
+
+
+@dataclass(frozen=True)
+class PlaywrightBrowserMetadata:
+    name: str
+    title: str
+    revision: str | None
+    browser_version: str | None
+    executable_path: Path | None
+    installed: bool
 
 
 def compiled_exe_directory() -> Path | None:
@@ -83,6 +95,27 @@ def chromium_executable_path() -> Path | None:
     return browser_executable_path("chromium")
 
 
+def playwright_browser_metadata(browser_name: str) -> PlaywrightBrowserMetadata | None:
+    browsers_json = _playwright_browsers_json()
+    if not browsers_json:
+        return None
+
+    for browser in browsers_json.get("browsers", []):
+        if browser.get("name") != browser_name:
+            continue
+
+        executable_path = browser_executable_path(browser_name)
+        return PlaywrightBrowserMetadata(
+            name=browser_name,
+            title=str(browser.get("title") or browser_name.replace("-", " ").title()),
+            revision=str(browser.get("revision", "")).strip() or None,
+            browser_version=str(browser.get("browserVersion", "")).strip() or None,
+            executable_path=executable_path,
+            installed=bool(executable_path is not None and executable_path.exists()),
+        )
+    return None
+
+
 def browser_executable_path(browser_name: str) -> Path | None:
     browsers_root = playwright_browsers_path()
     browser_revision = _browser_revision(browser_name)
@@ -109,6 +142,17 @@ def is_chromium_ready(provider: str, browser_headless: bool = True) -> bool:
         if executable_path is None or not executable_path.exists():
             return False
     return True
+
+
+def required_browser_names(provider: str, browser_headless: bool = True) -> tuple[str, ...]:
+    return _required_browser_names(provider, browser_headless)
+
+
+def parse_playwright_install_progress(output: str) -> int | None:
+    matches = _INSTALL_PROGRESS_PERCENT_PATTERN.findall(output or "")
+    if not matches:
+        return None
+    return max(0, min(100, int(matches[-1])))
 
 
 def playwright_browsers_path() -> Path | None:

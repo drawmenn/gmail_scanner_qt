@@ -19,6 +19,8 @@ from gmail_ai_qt_app.services.playwright_installer import (
     compiled_exe_directory,
     is_chromium_ready,
     is_chromium_installed,
+    parse_playwright_install_progress,
+    playwright_browser_metadata,
     playwright_browsers_path,
     provider_requires_chromium,
 )
@@ -103,6 +105,23 @@ class PlaywrightInstallerTests(unittest.TestCase):
         ):
             self.assertTrue(is_chromium_ready("playwright", browser_headless=False))
             self.assertFalse(is_chromium_ready("playwright", browser_headless=True))
+
+    def test_browser_metadata_includes_version_and_revision(self) -> None:
+        metadata = playwright_browser_metadata("chromium")
+
+        self.assertIsNotNone(metadata)
+        assert metadata is not None
+        self.assertEqual(metadata.name, "chromium")
+        self.assertTrue(bool(metadata.revision))
+        self.assertTrue(bool(metadata.browser_version))
+
+    def test_parse_install_progress_uses_latest_percentage(self) -> None:
+        output = "Downloading Chromium 10%\rDownloading Chromium 64%\rDownloading Chromium 100%"
+
+        self.assertEqual(parse_playwright_install_progress(output), 100)
+
+    def test_parse_install_progress_returns_none_without_percentage(self) -> None:
+        self.assertIsNone(parse_playwright_install_progress("Downloading Chromium..."))
 
 
 if __name__ == "__main__":

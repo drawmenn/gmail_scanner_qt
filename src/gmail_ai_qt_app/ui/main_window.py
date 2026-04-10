@@ -15,6 +15,7 @@ if __package__ in (None, ""):
     from gmail_ai_qt_app.services.playwright_installer import (
         chromium_install_command,
         is_chromium_ready,
+        parse_playwright_install_progress,
         provider_requires_chromium,
     )
     from gmail_ai_qt_app.services.settings_store import RuntimeSettingsStore
@@ -35,6 +36,7 @@ else:
     from ..services.playwright_installer import (
         chromium_install_command,
         is_chromium_ready,
+        parse_playwright_install_progress,
         provider_requires_chromium,
     )
     from ..services.settings_store import RuntimeSettingsStore
@@ -86,6 +88,7 @@ class MainWindow(QMainWindow):
         self.resume_scan_after_chromium_install = False
         self.chromium_install_status_state = "hidden"
         self.chromium_install_status_detail = ""
+        self.chromium_install_progress = None
         self.last_snapshot = {
             "stats": {"checked": 0, "hit": 0, "error": 0, "rate": 0.0},
             "history": {"checked": [], "hit": [], "rate": []},
@@ -333,6 +336,7 @@ class MainWindow(QMainWindow):
         self.chromium_install_status_timer.stop()
         self.chromium_install_status_state = "hidden"
         self.chromium_install_status_detail = ""
+        self.chromium_install_progress = None
         self.refresh_chromium_install_banner()
 
     def ensure_chromium_ready(self) -> bool:
@@ -395,6 +399,7 @@ class MainWindow(QMainWindow):
         self.chromium_install_output = ""
         self.chromium_install_error = ""
         self.chromium_install_canceled = False
+        self.chromium_install_progress = None
 
         process = QProcess(self)
         process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
@@ -443,6 +448,7 @@ class MainWindow(QMainWindow):
             return
 
         self.chromium_install_output += chunk
+        self.chromium_install_progress = parse_playwright_install_progress(self.chromium_install_output)
         latest_line = self._latest_install_output_line(chunk)
         self.set_chromium_install_status("running", latest_line)
 
@@ -497,6 +503,7 @@ class MainWindow(QMainWindow):
         self.chromium_install_canceled = False
         self.chromium_install_output = ""
         self.chromium_install_error = ""
+        self.chromium_install_progress = None
         return process, resume_scan, canceled, error_text, output_text
 
     def _fail_chromium_installation(self, detail: str = "", process=None) -> None:

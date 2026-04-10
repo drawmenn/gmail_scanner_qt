@@ -32,6 +32,14 @@ class _DummyProcess:
         self.deleted = True
 
 
+class _ReadableProcess:
+    def __init__(self, output_text: str) -> None:
+        self._output_text = output_text.encode("utf-8")
+
+    def readAll(self) -> bytes:
+        return self._output_text
+
+
 class _FakeInstallWindow:
     _take_chromium_install_state = MainWindow._take_chromium_install_state
     _fail_chromium_installation = MainWindow._fail_chromium_installation
@@ -60,6 +68,20 @@ class _FakeInstallWindow:
         if key == "browser_install_failed_message":
             return params["error"]
         return key
+
+
+class _FakeInstallReadWindow:
+    _read_chromium_install_output = MainWindow._read_chromium_install_output
+    _latest_install_output_line = staticmethod(MainWindow._latest_install_output_line)
+
+    def __init__(self, process: _ReadableProcess) -> None:
+        self.chromium_install_process = process
+        self.chromium_install_output = ""
+        self.chromium_install_progress = None
+        self.status_updates: list[tuple[str, str, int]] = []
+
+    def set_chromium_install_status(self, state: str, detail: str = "", auto_hide_ms: int = 0) -> None:
+        self.status_updates.append((state, detail, auto_hide_ms))
 
 
 class _FakePromptWindow:
@@ -172,6 +194,15 @@ class MainWindowInstallFlowTests(unittest.TestCase):
 
         self.assertEqual(window.install_requests, [(False, False)])
 
+    def test_read_install_output_tracks_latest_progress_percent(self) -> None:
+        process = _ReadableProcess("Downloading Chromium 14%\rDownloading Chromium 67%")
+        window = _FakeInstallReadWindow(process)
+
+        window._read_chromium_install_output()
+
+        self.assertEqual(window.chromium_install_progress, 67)
+        self.assertEqual(window.status_updates[-1], ("running", "Downloading Chromium 67%", 0))
+
     def test_main_window_initializes_multiline_inputs_and_option_combos(self) -> None:
         settings = RuntimeSettings(
             seeds=["james", "alex"],
@@ -204,6 +235,8 @@ class MainWindowInstallFlowTests(unittest.TestCase):
                     self.assertEqual(window.browser_headers_input.toPlainText(), settings.browser_headers)
                     self.assertEqual(window.browser_timeout_spin.value(), settings.browser_timeout_ms)
                     self.assertEqual(window.browser_delay_spin.value(), settings.browser_delay_ms)
+                    self.assertTrue(hasattr(window, "chromium_status_meta_label"))
+                    self.assertTrue(hasattr(window, "chromium_status_progress"))
                     self.assertEqual(window.name_list.count(), len(settings.seeds))
                 finally:
                     window.close()

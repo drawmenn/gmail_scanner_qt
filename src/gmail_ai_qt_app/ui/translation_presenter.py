@@ -54,6 +54,7 @@ class MainWindowTranslationPresenter:
         w.generator_count_label.setText(w.text("generator_count_label"))
         w.review_title_label.setText(w.text("review_title"))
         w.review_subtitle_label.setText(w.text("review_subtitle"))
+        w.chromium_strip_title_label.setText(w.text("browser_runtime_strip_title"))
 
         w.start_btn.setText(w.text("start_scan"))
         w.pause_btn.setText(w.text("pause"))
