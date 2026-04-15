@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from ..services.playwright_installer import (
+    browser_channel_metadata,
+    normalize_browser_channel,
+    playwright_browser_install_state,
     playwright_browser_metadata,
     provider_requires_chromium,
     required_browser_names,
@@ -44,7 +47,14 @@ class MainWindowStatePresenter:
         self.window.custom_body_input.setEnabled(is_custom and is_post)
 
     def refresh_browser_provider_panel(self) -> None:
-        is_browser = self.window.runtime_settings.provider == "playwright"
+        provider = self.window.runtime_settings.provider
+        is_browser = provider == "playwright"
+        supports_browser_runtime = provider_requires_chromium(provider)
+        for widget in (
+            self.window.browser_runtime_label,
+            self.window.browser_runtime_combo,
+        ):
+            widget.setEnabled(supports_browser_runtime)
         for widget in (
             self.window.browser_url_label,
             self.window.browser_url_input,
@@ -148,22 +158,48 @@ class MainWindowStatePresenter:
         progress = getattr(self.window, "chromium_install_progress", None)
         provider = self.window.runtime_settings.provider
         browser_headless = self.window.runtime_settings.browser_headless
+        browser_channel = normalize_browser_channel(self.window.runtime_settings.browser_channel)
+        uses_system_browser = bool(browser_channel)
         runtime_requires_chromium = provider_requires_chromium(provider)
-        runtime_browser_names = required_browser_names(provider, browser_headless)
-        runtime_metadata = [playwright_browser_metadata(name) for name in runtime_browser_names]
-        chromium_metadata = playwright_browser_metadata("chromium")
-        fallback_metadata = next((item for item in runtime_metadata if item is not None), None)
-        display_metadata = chromium_metadata or fallback_metadata
-        runtime_titles = [item.title if item is not None else name for name, item in zip(runtime_browser_names, runtime_metadata)]
-        runtime_title_text = ", ".join(runtime_titles)
-        runtime_ready = bool(runtime_browser_names) and all(item is not None and item.installed for item in runtime_metadata)
-        runtime_installed_count = sum(1 for item in runtime_metadata if item is not None and item.installed)
+        runtime_browser_names = required_browser_names(provider, browser_headless, browser_channel)
+        runtime_update_states = []
+        stale_revision_text = ""
+
+        if uses_system_browser:
+            display_metadata = browser_channel_metadata(browser_channel)
+            runtime_title_text = (
+                display_metadata.title
+                if display_metadata is not None
+                else self.window.text("browser_runtime_option_chrome")
+            )
+            runtime_ready = bool(display_metadata is not None and display_metadata.installed)
+            runtime_installed_count = 1 if runtime_ready else 0
+            runtime_needs_update = False
+        else:
+            runtime_metadata = [playwright_browser_metadata(name) for name in runtime_browser_names]
+            runtime_install_states = [playwright_browser_install_state(name) for name in runtime_browser_names]
+            chromium_metadata = playwright_browser_metadata("chromium")
+            fallback_metadata = next((item for item in runtime_metadata if item is not None), None)
+            display_metadata = chromium_metadata or fallback_metadata
+            runtime_titles = [item.title if item is not None else name for name, item in zip(runtime_browser_names, runtime_metadata)]
+            runtime_title_text = ", ".join(runtime_titles)
+            runtime_ready = bool(runtime_browser_names) and all(item is not None and item.installed for item in runtime_metadata)
+            runtime_installed_count = sum(1 for item in runtime_metadata if item is not None and item.installed)
+            runtime_update_states = [item for item in runtime_install_states if item.needs_reinstall]
+            runtime_needs_update = bool(runtime_update_states)
+            stale_revisions = tuple(
+                revision
+                for install_state in runtime_update_states
+                for revision in install_state.installed_revisions[:1]
+            )
+            stale_revision_text = ", ".join(f"r{revision}" for revision in stale_revisions)
 
         badge_key_map = {
             "running": "browser_install_badge_running",
             "finished": "browser_install_badge_finished",
             "failed": "browser_install_badge_failed",
             "canceled": "browser_install_badge_canceled",
+            "update": "browser_runtime_badge_update",
             "missing": "browser_runtime_badge_missing",
             "partial": "browser_runtime_badge_partial",
             "neutral": "browser_runtime_badge_optional",
@@ -176,6 +212,8 @@ class MainWindowStatePresenter:
             elif runtime_requires_chromium:
                 if runtime_ready:
                     view_state = "finished"
+                elif runtime_needs_update:
+                    view_state = "update"
                 elif runtime_installed_count > 0:
                     view_state = "partial"
                 else:
@@ -200,6 +238,12 @@ class MainWindowStatePresenter:
         elif runtime_requires_chromium:
             if runtime_ready:
                 status_text = self.window.text("browser_runtime_ready", runtime=runtime_title_text)
+            elif runtime_needs_update:
+                status_text = self.window.text(
+                    "browser_runtime_update",
+                    runtime=runtime_title_text,
+                    revisions=stale_revision_text or "?",
+                )
             elif runtime_installed_count > 0:
                 status_text = self.window.text("browser_runtime_partial", runtime=runtime_title_text)
             else:
@@ -220,6 +264,8 @@ class MainWindowStatePresenter:
         elif runtime_requires_chromium:
             if runtime_ready:
                 compact_status_text = self.window.text("browser_runtime_strip_ready")
+            elif runtime_needs_update:
+                compact_status_text = self.window.text("browser_runtime_strip_update")
             elif runtime_installed_count > 0:
                 compact_status_text = self.window.text("browser_runtime_strip_partial")
             else:
@@ -239,12 +285,15 @@ class MainWindowStatePresenter:
             meta_parts.append(
                 self.window.text("browser_runtime_revision_meta", revision=display_metadata.revision)
             )
+        if not show_progress and runtime_needs_update and stale_revision_text:
+            meta_parts.append(self.window.text("browser_runtime_stale_meta", revisions=stale_revision_text))
         if not show_progress and runtime_requires_chromium and runtime_title_text:
             meta_parts.append(self.window.text("browser_runtime_required_meta", runtime=runtime_title_text))
         elif not show_progress:
             meta_parts.append(self.window.text("browser_runtime_not_required_meta"))
         if display_metadata is not None and not show_progress:
-            meta_parts.append(self.window.text("browser_runtime_policy_locked"))
+            policy_key = "browser_runtime_policy_system" if uses_system_browser else "browser_runtime_policy_locked"
+            meta_parts.append(self.window.text(policy_key))
         meta_text = " | ".join(part for part in meta_parts if part)
 
         self.window.install_banner.setVisible(True)

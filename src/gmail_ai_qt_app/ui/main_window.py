@@ -13,6 +13,7 @@ if __package__ in (None, ""):
     from gmail_ai_qt_app.i18n import translate
     from gmail_ai_qt_app.models.state import RuntimeSettings
     from gmail_ai_qt_app.services.playwright_installer import (
+        normalize_browser_channel,
         chromium_install_command,
         is_chromium_ready,
         parse_playwright_install_progress,
@@ -34,6 +35,7 @@ else:
     from ..i18n import translate
     from ..models.state import RuntimeSettings
     from ..services.playwright_installer import (
+        normalize_browser_channel,
         chromium_install_command,
         is_chromium_ready,
         parse_playwright_install_progress,
@@ -207,6 +209,9 @@ class MainWindow(QMainWindow):
         self.browser_input_input.setText(settings.browser_input_selector)
         self.browser_value_input.setText(settings.browser_value_template or "{username}")
         self.browser_submit_input.setText(settings.browser_submit_selector)
+        runtime_index = self.browser_runtime_combo.findData(settings.browser_channel)
+        if runtime_index >= 0:
+            self.browser_runtime_combo.setCurrentIndex(runtime_index)
         self.browser_timeout_spin.setValue(int(settings.browser_timeout_ms or 10_000))
         self.browser_delay_spin.setValue(int(settings.browser_delay_ms or 800))
         self.browser_available_selector_input.setText(settings.browser_available_selector)
@@ -228,6 +233,7 @@ class MainWindow(QMainWindow):
 
         self.language_combo.currentIndexChanged.connect(self.change_language)
         self.provider_combo.currentIndexChanged.connect(self.change_provider)
+        self.browser_runtime_combo.currentIndexChanged.connect(self.sync_browser_provider_settings)
 
         self.add_btn.clicked.connect(self.add_name)
         self.remove_btn.clicked.connect(self.remove_selected_name)
@@ -317,6 +323,8 @@ class MainWindow(QMainWindow):
             return
         if not provider_requires_chromium(self.runtime_settings.provider):
             return
+        if normalize_browser_channel(self.runtime_settings.browser_channel):
+            return
         self.request_chromium_install(resume_scan=False)
 
     def set_chromium_install_status(
@@ -351,6 +359,7 @@ class MainWindow(QMainWindow):
         resume_scan: bool,
         skip_installed_check: bool = False,
     ) -> bool:
+        browser_channel = normalize_browser_channel(self.runtime_settings.browser_channel)
         if self.chromium_install_process is not None:
             self.resume_scan_after_chromium_install = self.resume_scan_after_chromium_install or resume_scan
             self.add_log_event("log_browser_install_running", "info")
@@ -359,8 +368,19 @@ class MainWindow(QMainWindow):
         if not skip_installed_check and is_chromium_ready(
             self.runtime_settings.provider,
             self.runtime_settings.browser_headless,
+            browser_channel,
         ):
             return True
+
+        if browser_channel:
+            provider_label = self.provider_combo.currentText() or self.runtime_settings.provider
+            self.add_log_event("log_browser_channel_missing", "error")
+            QMessageBox.warning(
+                self,
+                self.text("browser_runtime_title"),
+                self.text("browser_runtime_system_missing_message", provider=provider_label),
+            )
+            return False
 
         install_command = chromium_install_command()
         if install_command is None:
@@ -480,6 +500,7 @@ class MainWindow(QMainWindow):
             and is_chromium_ready(
                 self.runtime_settings.provider,
                 self.runtime_settings.browser_headless,
+                self.runtime_settings.browser_channel,
             )
         ):
             self.add_log_event("log_browser_install_finished", "info")

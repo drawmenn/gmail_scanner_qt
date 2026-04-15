@@ -54,6 +54,7 @@ class MainWindowSettingsPresenter:
         settings.browser_input_selector = self.window.browser_input_input.text().strip()
         settings.browser_value_template = self.window.browser_value_input.text() or "{username}"
         settings.browser_submit_selector = self.window.browser_submit_input.text().strip()
+        settings.browser_channel = str(self.window.browser_runtime_combo.currentData() or "").strip()
         settings.browser_headers = self.window.browser_headers_input.toPlainText()
         settings.browser_available_selector = self.window.browser_available_selector_input.text().strip()
         settings.browser_available_text = self.window.browser_available_text_input.text().strip()
@@ -71,6 +72,7 @@ class MainWindowSettingsPresenter:
                 "input_selector": settings.browser_input_selector,
                 "value_template": settings.browser_value_template,
                 "submit_selector": settings.browser_submit_selector,
+                "channel": settings.browser_channel,
                 "headers": settings.browser_headers,
                 "available_selector": settings.browser_available_selector,
                 "available_text": settings.browser_available_text,

@@ -15,6 +15,7 @@ DEFAULT_CUSTOM_STATUS_CODES = ""
 DEFAULT_CUSTOM_AVAILABLE_REGEX = ""
 DEFAULT_CUSTOM_TAKEN_REGEX = ""
 DEFAULT_BROWSER_VALUE_TEMPLATE = "{username}"
+DEFAULT_BROWSER_CHANNEL = ""
 DEFAULT_BROWSER_TIMEOUT_MS = 10000
 DEFAULT_BROWSER_DELAY_MS = 800
 MAX_HISTORY_POINTS = 100
@@ -43,6 +44,7 @@ class RuntimeSettings:
     browser_input_selector: str = ""
     browser_value_template: str = DEFAULT_BROWSER_VALUE_TEMPLATE
     browser_submit_selector: str = ""
+    browser_channel: str = DEFAULT_BROWSER_CHANNEL
     browser_headers: str = ""
     browser_available_selector: str = ""
     browser_available_text: str = ""
@@ -77,6 +79,7 @@ class RuntimeSettings:
             "browser_input_selector": self.browser_input_selector,
             "browser_value_template": self.browser_value_template,
             "browser_submit_selector": self.browser_submit_selector,
+            "browser_channel": self.browser_channel,
             "browser_headers": self.browser_headers,
             "browser_available_selector": self.browser_available_selector,
             "browser_available_text": self.browser_available_text,
@@ -114,6 +117,7 @@ class RuntimeSettings:
             browser_input_selector=str(data.get("browser_input_selector", defaults.browser_input_selector)),
             browser_value_template=str(data.get("browser_value_template", defaults.browser_value_template)),
             browser_submit_selector=str(data.get("browser_submit_selector", defaults.browser_submit_selector)),
+            browser_channel=str(data.get("browser_channel", defaults.browser_channel)),
             browser_headers=str(data.get("browser_headers", defaults.browser_headers)),
             browser_available_selector=str(data.get("browser_available_selector", defaults.browser_available_selector)),
             browser_available_text=str(data.get("browser_available_text", defaults.browser_available_text)),

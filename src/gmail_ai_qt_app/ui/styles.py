@@ -316,6 +316,14 @@ QLabel#RateLabel {
             border: 1px solid #d7e2ec;
         }
 
+        QFrame#InstallBanner[state="update"] {
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #fff4dd, stop:1 #fee8c2
+            );
+            border: 1px solid #e6bf72;
+        }
+
         QFrame#InstallBanner[state="missing"] {
             background: qlineargradient(
                 x1:0, y1:0, x2:1, y2:0,
@@ -399,6 +407,12 @@ QLabel#RateLabel {
             background: #fff0d4;
             color: #92400e;
             border: 1px solid #e8c276;
+        }
+
+        QFrame#InstallBanner[state="update"] QLabel#InstallStatusBadge {
+            background: #ffe8b8;
+            color: #8a530c;
+            border: 1px solid #e0b868;
         }
 
         QFrame#InstallBanner[state="missing"] QLabel#InstallStatusBadge,

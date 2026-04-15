@@ -219,6 +219,9 @@ class MainWindowLayoutBuilder:
         self.main_window.provider_label = QLabel()
         self.main_window.provider_combo = QComboBox()
         self.main_window.provider_combo.setFixedHeight(32)
+        self.main_window.browser_runtime_label = QLabel()
+        self.main_window.browser_runtime_combo = QComboBox()
+        self.main_window.browser_runtime_combo.setFixedHeight(32)
         self.main_window.proxy_check = QCheckBox()
         self.main_window.proxy_input = QLineEdit()
         self.main_window.proxy_input.setFixedHeight(32)
@@ -229,6 +232,12 @@ class MainWindowLayoutBuilder:
         language_row.addWidget(self._field_block(self.main_window.provider_label, self.main_window.provider_combo))
         layout.addLayout(language_row)
 
+        layout.addWidget(
+            self._field_block(
+                self.main_window.browser_runtime_label,
+                self.main_window.browser_runtime_combo,
+            )
+        )
         self.main_window.proxy_check.setCursor(Qt.CursorShape.PointingHandCursor)
         layout.addWidget(self.main_window.proxy_check)
         layout.addWidget(self.main_window.proxy_input)

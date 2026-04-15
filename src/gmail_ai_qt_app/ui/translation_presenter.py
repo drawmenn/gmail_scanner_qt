@@ -18,6 +18,7 @@ class MainWindowTranslationPresenter:
 
         w.language_label.setText(w.text("display_label"))
         w.provider_label.setText(w.text("provider_label"))
+        w.browser_runtime_label.setText(w.text("browser_runtime_label"))
         w.custom_title_label.setText(w.text("custom_title"))
         w.custom_subtitle_label.setText(w.text("custom_subtitle"))
         w.custom_url_label.setText(w.text("custom_url_label"))
@@ -77,6 +78,7 @@ class MainWindowTranslationPresenter:
         w.proxy_check.setText(w.text("proxy_enabled"))
         w.proxy_input.setPlaceholderText(w.text("proxy_placeholder"))
         self.refresh_language_options()
+        self.refresh_browser_runtime_options()
         self.refresh_custom_method_options()
         w.custom_url_input.setPlaceholderText(w.text("custom_url_placeholder"))
         w.custom_param_input.setPlaceholderText(w.text("custom_param_placeholder"))
@@ -149,6 +151,17 @@ class MainWindowTranslationPresenter:
             combo.addItem(self.window.text(provider.label_key), provider.code)
 
         restored_index = combo.findData(current_provider)
+        combo.setCurrentIndex(restored_index if restored_index >= 0 else 0)
+        combo.blockSignals(False)
+
+    def refresh_browser_runtime_options(self) -> None:
+        current_channel = self.window.runtime_settings.browser_channel
+        combo = self.window.browser_runtime_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(self.window.text("browser_runtime_option_playwright"), "")
+        combo.addItem(self.window.text("browser_runtime_option_chrome"), "chrome")
+        restored_index = combo.findData(current_channel)
         combo.setCurrentIndex(restored_index if restored_index >= 0 else 0)
         combo.blockSignals(False)
 

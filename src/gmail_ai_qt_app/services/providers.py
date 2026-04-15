@@ -8,6 +8,7 @@ from threading import Event
 from typing import Literal
 
 from ..models.state import RuntimeSettings
+from .playwright_installer import is_chromium_ready, normalize_browser_channel
 
 
 @dataclass(frozen=True)
@@ -227,30 +228,33 @@ def run_playwright_scan(
     timeout_ms = max(1000, int(settings.browser_timeout_ms or 10_000))
     delay_ms = max(0, int(settings.browser_delay_ms or 0))
     headers = build_custom_headers(settings.browser_headers, name)
+    browser_channel = normalize_browser_channel(settings.browser_channel)
     browser = None
+
+    if browser_channel and not is_chromium_ready(
+        "playwright",
+        settings.browser_headless,
+        browser_channel,
+    ):
+        return ScanOutcome(
+            error_delta=1,
+            tag="error",
+            message_key="log_browser_channel_missing",
+            params={},
+        )
 
     try:
         ensure_scan_not_canceled(cancel_event)
         with sync_playwright() as playwright:
             ensure_scan_not_canceled(cancel_event)
-            launch_kwargs = {"headless": bool(settings.browser_headless)}
-            if settings.proxy_enabled and settings.proxy_url.strip():
-                proxy_server = settings.proxy_url.strip()
-                if "://" not in proxy_server:
-                    proxy_server = f"http://{proxy_server}"
-                launch_kwargs["proxy"] = {"server": proxy_server}
-
-            try:
-                browser = playwright.chromium.launch(**launch_kwargs)
-            except Exception as exc:
-                if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
-                    return ScanOutcome(
-                        error_delta=1,
-                        tag="error",
-                        message_key="log_browser_chromium_missing",
-                        params={},
-                    )
-                raise
+            launch_kwargs = browser_launch_kwargs(settings)
+            browser = _launch_browser_or_report_missing(
+                playwright,
+                launch_kwargs,
+                browser_channel=browser_channel,
+            )
+            if isinstance(browser, ScanOutcome):
+                return browser
             page = browser.new_page()
             ensure_scan_not_canceled(cancel_event)
             if headers:
@@ -324,12 +328,15 @@ def run_google_browser_scan(
             params={},
         )
 
-    proxy_kwargs = {}
-    if settings is not None and settings.proxy_enabled and settings.proxy_url.strip():
-        proxy_server = settings.proxy_url.strip()
-        if "://" not in proxy_server:
-            proxy_server = f"http://{proxy_server}"
-        proxy_kwargs["proxy"] = {"server": proxy_server}
+    browser_settings = settings or RuntimeSettings()
+    browser_channel = normalize_browser_channel(browser_settings.browser_channel)
+    if browser_channel and not is_chromium_ready("google_browser", False, browser_channel):
+        return ScanOutcome(
+            error_delta=1,
+            tag="error",
+            message_key="log_browser_channel_missing",
+            params={},
+        )
 
     browser = None
     context = None
@@ -337,22 +344,18 @@ def run_google_browser_scan(
         ensure_scan_not_canceled(cancel_event)
         with sync_playwright() as playwright:
             ensure_scan_not_canceled(cancel_event)
-            try:
-                browser = playwright.chromium.launch(
+            browser = _launch_browser_or_report_missing(
+                playwright,
+                browser_launch_kwargs(
+                    browser_settings,
                     headless=False,
                     ignore_default_args=["--enable-automation"],
                     args=["--disable-blink-features=AutomationControlled"],
-                    **proxy_kwargs,
-                )
-            except Exception as exc:
-                if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
-                    return ScanOutcome(
-                        error_delta=1,
-                        tag="error",
-                        message_key="log_browser_chromium_missing",
-                        params={},
-                    )
-                raise
+                ),
+                browser_channel=browser_channel,
+            )
+            if isinstance(browser, ScanOutcome):
+                return browser
             context = browser.new_context(viewport={"width": 1280, "height": 900}, locale="en-US")
             context.add_init_script(
                 """
@@ -702,6 +705,56 @@ def parse_network_response(
 
 def normalize_custom_method(method: str) -> Literal["GET", "POST"]:
     return "POST" if (method or "").strip().upper() == "POST" else "GET"
+
+
+def browser_launch_kwargs(
+    settings: RuntimeSettings,
+    *,
+    headless: bool | None = None,
+    ignore_default_args: list[str] | None = None,
+    args: list[str] | None = None,
+) -> dict:
+    launch_kwargs: dict[str, object] = {
+        "headless": bool(settings.browser_headless if headless is None else headless),
+    }
+
+    browser_channel = normalize_browser_channel(settings.browser_channel)
+    if browser_channel:
+        launch_kwargs["channel"] = browser_channel
+
+    if settings.proxy_enabled and settings.proxy_url.strip():
+        proxy_server = settings.proxy_url.strip()
+        if "://" not in proxy_server:
+            proxy_server = f"http://{proxy_server}"
+        launch_kwargs["proxy"] = {"server": proxy_server}
+
+    if ignore_default_args:
+        launch_kwargs["ignore_default_args"] = list(ignore_default_args)
+    if args:
+        launch_kwargs["args"] = list(args)
+    return launch_kwargs
+
+
+def _launch_browser_or_report_missing(playwright, launch_kwargs: dict, *, browser_channel: str):
+    try:
+        return playwright.chromium.launch(**launch_kwargs)
+    except Exception as exc:
+        message = str(exc)
+        if "Executable doesn't exist" in message or "playwright install" in message.lower():
+            if browser_channel:
+                return ScanOutcome(
+                    error_delta=1,
+                    tag="error",
+                    message_key="log_browser_channel_missing",
+                    params={},
+                )
+            return ScanOutcome(
+                error_delta=1,
+                tag="error",
+                message_key="log_browser_chromium_missing",
+                params={},
+            )
+        raise
 
 
 def resolve_template(value: str, name: str) -> str:

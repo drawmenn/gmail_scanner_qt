@@ -15,6 +15,7 @@ from PySide6.QtNetwork import (
 )
 
 from ..models.state import RuntimeSettings, ScanHistory, ScanStats
+from .playwright_installer import provider_requires_chromium
 from .providers import (
     ScanCanceledError,
     ScanOutcome,
@@ -211,6 +212,7 @@ class ScannerWorker(QObject):
             self._settings.browser_input_selector = str(config.get("input_selector", "")).strip()
             self._settings.browser_value_template = str(config.get("value_template", "{username}"))
             self._settings.browser_submit_selector = str(config.get("submit_selector", "")).strip()
+            self._settings.browser_channel = str(config.get("channel", "")).strip()
             self._settings.browser_headers = str(config.get("headers", ""))
             self._settings.browser_available_selector = str(config.get("available_selector", "")).strip()
             self._settings.browser_available_text = str(config.get("available_text", "")).strip()
@@ -221,11 +223,11 @@ class ScannerWorker(QObject):
             self._settings.browser_timeout_ms = int(config.get("timeout_ms", 10_000) or 10_000)
             self._settings.browser_delay_ms = int(config.get("delay_ms", 800) or 800)
             self._settings.browser_headless = bool(config.get("headless", True))
-            if self._settings.provider == "playwright":
+            if provider_requires_chromium(self._settings.provider):
                 self._generation += 1
                 self._pending_candidate = None
 
-        if self._settings.provider == "playwright":
+        if provider_requires_chromium(self._settings.provider):
             self._stop_request_timer()
             self._abort_current_reply()
             self._cancel_active_local_scan()

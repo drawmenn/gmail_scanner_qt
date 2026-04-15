@@ -87,8 +87,13 @@ class _FakeInstallReadWindow:
 class _FakePromptWindow:
     _handle_runtime_browser_missing = MainWindow._handle_runtime_browser_missing
 
-    def __init__(self, provider: str = "playwright", runtime_state: str = "running") -> None:
-        self.runtime_settings = mock.Mock(provider=provider)
+    def __init__(
+        self,
+        provider: str = "playwright",
+        runtime_state: str = "running",
+        browser_channel: str = "",
+    ) -> None:
+        self.runtime_settings = mock.Mock(provider=provider, browser_channel=browser_channel)
         self.runtime_state = runtime_state
         self.pause_calls = 0
         self.install_requests: list[tuple[bool, bool]] = []
@@ -104,8 +109,8 @@ class _FakePromptWindow:
 class _FakeStartupPromptWindow:
     maybe_request_chromium_on_launch = MainWindow.maybe_request_chromium_on_launch
 
-    def __init__(self, provider: str = "playwright") -> None:
-        self.runtime_settings = mock.Mock(provider=provider)
+    def __init__(self, provider: str = "playwright", browser_channel: str = "") -> None:
+        self.runtime_settings = mock.Mock(provider=provider, browser_channel=browser_channel)
         self.install_requests: list[tuple[bool, bool]] = []
 
     def request_chromium_install(self, *, resume_scan: bool, skip_installed_check: bool = False) -> bool:
@@ -181,6 +186,14 @@ class MainWindowInstallFlowTests(unittest.TestCase):
 
         self.assertEqual(window.install_requests, [])
 
+    def test_system_chrome_launch_does_not_prompt_playwright_install(self) -> None:
+        window = _FakeStartupPromptWindow(browser_channel="chrome")
+
+        with mock.patch("gmail_ai_qt_app.ui.main_window.sys.frozen", True, create=True):
+            window.maybe_request_chromium_on_launch()
+
+        self.assertEqual(window.install_requests, [])
+
     def test_nuitka_launch_prompts_install_without_sys_frozen(self) -> None:
         window = _FakeStartupPromptWindow()
 
@@ -213,6 +226,7 @@ class MainWindowInstallFlowTests(unittest.TestCase):
             custom_headers="Authorization: Bearer demo-token",
             custom_body_template='{"username":"{username}"}',
             browser_headers="X-User: {username}",
+            browser_channel="chrome",
             browser_timeout_ms=10_000,
             browser_delay_ms=800,
         )
@@ -230,6 +244,7 @@ class MainWindowInstallFlowTests(unittest.TestCase):
                     self.assertIsInstance(window.browser_headers_input, QTextEdit)
                     self.assertEqual(window.language_combo.currentData(), "zh_CN")
                     self.assertEqual(window.provider_combo.currentData(), "manual")
+                    self.assertEqual(window.browser_runtime_combo.currentData(), "chrome")
                     self.assertEqual(window.auto_review_action_combo.currentData(), "hold")
                     self.assertEqual(window.custom_headers_input.toPlainText(), settings.custom_headers)
                     self.assertEqual(window.browser_headers_input.toPlainText(), settings.browser_headers)

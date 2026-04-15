@@ -4,12 +4,16 @@ import json
 import os
 import platform
 import re
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 
 _CHROMIUM_PROVIDERS = frozenset({"playwright", "google_browser"})
+_SUPPORTED_BROWSER_CHANNELS = frozenset({"chrome"})
 _INSTALL_PROGRESS_PERCENT_PATTERN = re.compile(r"(?<!\d)(100|[1-9]?\d)%")
 _BROWSER_EXECUTABLE_TOKENS = {
     "chromium": {
@@ -58,6 +62,25 @@ class PlaywrightBrowserMetadata:
     installed: bool
 
 
+@dataclass(frozen=True)
+class PlaywrightBrowserInstallState:
+    name: str
+    target_revision: str | None
+    installed_revisions: tuple[str, ...]
+
+    @property
+    def has_any_installed(self) -> bool:
+        return bool(self.installed_revisions)
+
+    @property
+    def target_installed(self) -> bool:
+        return bool(self.target_revision and self.target_revision in self.installed_revisions)
+
+    @property
+    def needs_reinstall(self) -> bool:
+        return self.has_any_installed and not self.target_installed
+
+
 def compiled_exe_directory() -> Path | None:
     onefile_directory = os.environ.get("NUITKA_ONEFILE_DIRECTORY", "").strip()
     if onefile_directory:
@@ -72,6 +95,39 @@ def compiled_exe_directory() -> Path | None:
 
 def provider_requires_chromium(provider: str) -> bool:
     return (provider or "").strip() in _CHROMIUM_PROVIDERS
+
+
+def normalize_browser_channel(browser_channel: str) -> str:
+    normalized = str(browser_channel or "").strip().lower()
+    return normalized if normalized in _SUPPORTED_BROWSER_CHANNELS else ""
+
+
+def browser_channel_executable_path(browser_channel: str) -> Path | None:
+    normalized = normalize_browser_channel(browser_channel)
+    if not normalized:
+        return None
+
+    if normalized == "chrome":
+        for candidate in _browser_channel_candidates(normalized):
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def browser_channel_metadata(browser_channel: str) -> PlaywrightBrowserMetadata | None:
+    normalized = normalize_browser_channel(browser_channel)
+    if not normalized:
+        return None
+
+    executable_path = browser_channel_executable_path(normalized)
+    return PlaywrightBrowserMetadata(
+        name=normalized,
+        title=_browser_channel_title(normalized),
+        revision=None,
+        browser_version=_browser_channel_version(executable_path) if executable_path is not None else None,
+        executable_path=executable_path,
+        installed=bool(executable_path is not None and executable_path.exists()),
+    )
 
 
 def chromium_install_command() -> PlaywrightInstallCommand | None:
@@ -132,8 +188,17 @@ def is_chromium_installed() -> bool:
     return executable_path is not None and executable_path.exists()
 
 
-def is_chromium_ready(provider: str, browser_headless: bool = True) -> bool:
-    required_browsers = _required_browser_names(provider, browser_headless)
+def is_chromium_ready(
+    provider: str,
+    browser_headless: bool = True,
+    browser_channel: str = "",
+) -> bool:
+    normalized_channel = normalize_browser_channel(browser_channel)
+    if provider_requires_chromium(provider) and normalized_channel:
+        executable_path = browser_channel_executable_path(normalized_channel)
+        return executable_path is not None and executable_path.exists()
+
+    required_browsers = _required_browser_names(provider, browser_headless, normalized_channel)
     if not required_browsers:
         return True
 
@@ -144,8 +209,43 @@ def is_chromium_ready(provider: str, browser_headless: bool = True) -> bool:
     return True
 
 
-def required_browser_names(provider: str, browser_headless: bool = True) -> tuple[str, ...]:
-    return _required_browser_names(provider, browser_headless)
+def required_browser_names(
+    provider: str,
+    browser_headless: bool = True,
+    browser_channel: str = "",
+) -> tuple[str, ...]:
+    return _required_browser_names(provider, browser_headless, normalize_browser_channel(browser_channel))
+
+
+def playwright_browser_install_state(browser_name: str) -> PlaywrightBrowserInstallState:
+    return PlaywrightBrowserInstallState(
+        name=browser_name,
+        target_revision=_browser_revision(browser_name),
+        installed_revisions=installed_browser_revisions(browser_name),
+    )
+
+
+def installed_browser_revisions(browser_name: str) -> tuple[str, ...]:
+    browsers_root = playwright_browsers_path()
+    if browsers_root is None or not browsers_root.exists():
+        return ()
+
+    directory_prefix = f"{browser_name.replace('-', '_')}-"
+    revisions: list[str] = []
+    try:
+        for entry in browsers_root.iterdir():
+            if not entry.is_dir():
+                continue
+            name = entry.name.strip()
+            if not name.startswith(directory_prefix):
+                continue
+            revision = name[len(directory_prefix) :].strip()
+            if revision:
+                revisions.append(revision)
+    except OSError:
+        return ()
+
+    return tuple(sorted(set(revisions), key=_revision_sort_key, reverse=True))
 
 
 def parse_playwright_install_progress(output: str) -> int | None:
@@ -244,8 +344,82 @@ def _host_platform_key() -> str | None:
     return None
 
 
-def _required_browser_names(provider: str, browser_headless: bool) -> tuple[str, ...]:
+def _revision_sort_key(value: str) -> tuple[int, str]:
+    normalized = (value or "").strip()
+    return (0, normalized) if not normalized.isdigit() else (1, f"{int(normalized):020d}")
+
+
+def _browser_channel_title(browser_channel: str) -> str:
+    if normalize_browser_channel(browser_channel) == "chrome":
+        return "Google Chrome"
+    return browser_channel or "Browser"
+
+
+def _browser_channel_candidates(browser_channel: str) -> tuple[Path, ...]:
+    normalized = normalize_browser_channel(browser_channel)
+    if normalized != "chrome":
+        return ()
+
+    if sys.platform == "win32":
+        candidates: list[Path] = []
+        for env_key in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+            base_path = (os.environ.get(env_key) or "").strip()
+            if not base_path:
+                continue
+            candidates.append(Path(base_path) / "Google" / "Chrome" / "Application" / "chrome.exe")
+        return tuple(candidates)
+
+    if sys.platform == "darwin":
+        return (
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path.home() / "Applications" / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome",
+        )
+
+    candidates = []
+    for command_name in ("google-chrome", "google-chrome-stable"):
+        resolved = shutil.which(command_name)
+        if resolved:
+            candidates.append(Path(resolved))
+    return tuple(candidates)
+
+
+def _browser_channel_version(executable_path: Path | None) -> str | None:
+    if executable_path is None or not executable_path.exists():
+        return None
+    return _cached_browser_channel_version(str(executable_path))
+
+
+@lru_cache(maxsize=8)
+def _cached_browser_channel_version(executable_path: str) -> str | None:
+    kwargs = {
+        "args": [executable_path, "--version"],
+        "capture_output": True,
+        "timeout": 2,
+        "check": False,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    try:
+        result = subprocess.run(**kwargs)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+    version_bytes = result.stdout or result.stderr or b""
+    if isinstance(version_bytes, bytes):
+        version_text = version_bytes.decode("utf-8", errors="ignore").strip()
+    else:
+        version_text = str(version_bytes or "").strip()
+    match = re.search(r"(\d+(?:\.\d+)+)", version_text)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _required_browser_names(provider: str, browser_headless: bool, browser_channel: str) -> tuple[str, ...]:
     normalized = (provider or "").strip()
+    if browser_channel:
+        return ()
     if normalized == "google_browser":
         return ("chromium",)
     if normalized == "playwright":

@@ -11,7 +11,11 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from gmail_ai_qt_app.models.state import RuntimeSettings
-from gmail_ai_qt_app.services.providers import parse_browser_response, parse_google_browser_content
+from gmail_ai_qt_app.services.providers import (
+    browser_launch_kwargs,
+    parse_browser_response,
+    parse_google_browser_content,
+)
 
 
 class _FakeLocator:
@@ -109,6 +113,36 @@ class ParseGoogleBrowserContentTests(unittest.TestCase):
 
 
 class ParseBrowserResponseTests(unittest.TestCase):
+    def test_launch_kwargs_include_system_chrome_channel(self) -> None:
+        settings = RuntimeSettings(
+            browser_channel="chrome",
+            browser_headless=False,
+        )
+
+        launch_kwargs = browser_launch_kwargs(settings)
+
+        self.assertEqual(launch_kwargs["channel"], "chrome")
+        self.assertFalse(launch_kwargs["headless"])
+
+    def test_launch_kwargs_preserve_proxy_and_google_args(self) -> None:
+        settings = RuntimeSettings(
+            proxy_enabled=True,
+            proxy_url="127.0.0.1:7897",
+            browser_channel="chrome",
+        )
+
+        launch_kwargs = browser_launch_kwargs(
+            settings,
+            headless=False,
+            ignore_default_args=["--enable-automation"],
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+
+        self.assertEqual(launch_kwargs["channel"], "chrome")
+        self.assertEqual(launch_kwargs["proxy"], {"server": "http://127.0.0.1:7897"})
+        self.assertEqual(launch_kwargs["ignore_default_args"], ["--enable-automation"])
+        self.assertEqual(launch_kwargs["args"], ["--disable-blink-features=AutomationControlled"])
+
     def test_matches_regex_against_visible_page_text(self) -> None:
         settings = RuntimeSettings(
             browser_available_regex=r"available now",
