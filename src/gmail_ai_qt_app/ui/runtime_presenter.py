@@ -104,28 +104,7 @@ class MainWindowRuntimePresenter:
         saved, path, error = self.window.settings_store.save(self.window.runtime_settings)
         if not saved and error:
             print(f"Failed to save settings to {path}: {error}", file=sys.stderr)
-        self._auto_save_review_records()
         super(type(self.window), self.window).closeEvent(event)
-
-    def _auto_save_review_records(self) -> None:
-        import csv
-        from pathlib import Path
-        from PySide6.QtCore import QDateTime
-        records = self.window.review_records
-        if not records:
-            return
-        settings_path = self.window.settings_store.path
-        save_dir = settings_path.parent
-        try:
-            save_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"review_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.csv"
-            out_path = save_dir / filename
-            with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=["timestamp", "candidate", "decision", "provider"])
-                writer.writeheader()
-                writer.writerows(records)
-        except Exception as exc:
-            print(f"Failed to auto-save review records: {exc}", file=sys.stderr)
 
     def manual_actions_enabled(self, ignore_focus: bool = False) -> bool:
         focused = self.window.focusWidget()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 
-from PySide6.QtCore import QDateTime, Qt, QUrl
+from PySide6.QtCore import QDateTime, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QFileDialog
 
@@ -89,14 +89,7 @@ class MainWindowActionsPresenter:
         if not self.window._manual_actions_enabled(ignore_focus=bypass_focus_guard):
             return
         candidate = self.window.current_review_candidate
-        self.window.review_records.append(
-            {
-                "timestamp": QDateTime.currentDateTime().toString(Qt.ISODate),
-                "candidate": candidate,
-                "decision": decision,
-                "provider": self.window.runtime_settings.provider,
-            }
-        )
+        self.window.record_review_record(candidate, decision)
         self.window.current_request_state = "idle"
         self.window.current_review_candidate = ""
         self.window.refresh_request_status()

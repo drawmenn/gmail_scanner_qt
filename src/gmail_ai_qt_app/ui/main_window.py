@@ -1,8 +1,9 @@
+import csv
 import os
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QDateTime, QProcess, QProcessEnvironment, QThread, QTimer
+from PySide6.QtCore import QDateTime, QProcess, QProcessEnvironment, Qt, QThread, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 if __package__ in (None, ""):
@@ -68,6 +69,7 @@ class MainWindow(QMainWindow):
     AUTO_REVIEW_DELAY_MS = 350
     AUTO_REVIEW_ACTIONS = ("available", "taken", "hold", "skip")
     LOG_FLUSH_INTERVAL_MS = 200
+    REVIEW_RECORD_FIELDS = ("timestamp", "candidate", "decision", "provider")
 
     def __init__(self):
         super().__init__()
@@ -298,14 +300,66 @@ class MainWindow(QMainWindow):
         self.chart_presenter.apply_snapshot(payload)
 
     def add_log_event(self, message_key: str, tag: str, params=None) -> None:
+        params = dict(params or {})
         entry = LogEntry(
             stamp=QDateTime.currentDateTime().toString("HH:mm:ss"),
             message_key=message_key,
             tag=tag,
-            params=dict(params or {}),
+            params=params,
         )
         self.log_buffer.add_entry(entry)
+        self._record_auto_available_hit(message_key, params)
         self._handle_runtime_browser_missing(message_key)
+
+    def _record_auto_available_hit(self, message_key: str, params: dict) -> None:
+        if message_key != "log_name_available":
+            return
+        if self.runtime_settings.provider == "manual":
+            return
+
+        candidate = str(params.get("name", "")).strip()
+        if not candidate:
+            return
+
+        self.record_review_record(candidate, "available")
+        self.refresh_review_panel()
+
+    def record_review_record(self, candidate: str, decision: str, provider: str | None = None) -> dict:
+        record = {
+            "timestamp": QDateTime.currentDateTime().toString(Qt.ISODate),
+            "candidate": candidate,
+            "decision": decision,
+            "provider": provider or self.runtime_settings.provider,
+        }
+        self.review_records.append(record)
+        saved, path, error = self._append_review_record_to_disk(record)
+        if saved:
+            self.add_log_event("log_review_record_saved", "info", {"path": str(path)})
+        else:
+            self.add_log_event(
+                "log_review_record_save_failed",
+                "error",
+                {"path": str(path), "error": error or "unknown error"},
+            )
+        return record
+
+    def review_records_path(self) -> Path:
+        return self.settings_store.path.parent / "review_records.csv"
+
+    def _append_review_record_to_disk(self, record: dict) -> tuple[bool, Path, str | None]:
+        path = self.review_records_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_header = not path.exists() or path.stat().st_size == 0
+            with open(path, "a", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=self.REVIEW_RECORD_FIELDS)
+                if write_header:
+                    writer.writeheader()
+                writer.writerow(record)
+        except Exception as exc:
+            print(f"Failed to append review record to {path}: {exc}", file=sys.stderr)
+            return False, path, str(exc)
+        return True, path, None
 
     def _handle_runtime_browser_missing(self, message_key: str) -> None:
         if message_key != "log_browser_chromium_missing":
