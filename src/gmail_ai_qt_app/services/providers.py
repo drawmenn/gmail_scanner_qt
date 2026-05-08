@@ -39,6 +39,7 @@ class ScanOutcome:
     tag: str = "info"
     message_key: str = ""
     params: dict[str, str] = field(default_factory=dict)
+    fatal: bool = False
 
 
 class ScanCanceledError(Exception):
@@ -46,6 +47,16 @@ class ScanCanceledError(Exception):
 
 
 _BROWSER_DEBUG_SNIPPET_MAX = 120
+_BROWSER_CONNECTION_ERROR_TOKENS = (
+    "net::err_connection_reset",
+    "net::err_connection_refused",
+    "net::err_proxy_connection_failed",
+    "net::err_tunnel_connection_failed",
+    "net::err_name_not_resolved",
+    "net::err_internet_disconnected",
+    "net::err_network_changed",
+    "net::err_connection_timed_out",
+)
 
 
 PROVIDER_OPTIONS = [
@@ -290,12 +301,7 @@ def run_playwright_scan(
             params={"name": name},
         )
     except PlaywrightError as exc:
-        return ScanOutcome(
-            error_delta=1,
-            tag="error",
-            message_key="log_browser_failed",
-            params={"name": name, "error": str(exc)},
-        )
+        return browser_failure_outcome(name, exc)
     except Exception as exc:
         return ScanOutcome(
             error_delta=1,
@@ -396,12 +402,7 @@ def run_google_browser_scan(
             params={"name": name},
         )
     except PlaywrightError as exc:
-        return ScanOutcome(
-            error_delta=1,
-            tag="error",
-            message_key="log_browser_failed",
-            params={"name": name, "error": str(exc)},
-        )
+        return browser_failure_outcome(name, exc)
     except Exception as exc:
         return ScanOutcome(
             error_delta=1,
@@ -733,6 +734,29 @@ def browser_launch_kwargs(
     if args:
         launch_kwargs["args"] = list(args)
     return launch_kwargs
+
+
+def browser_failure_outcome(name: str, error: object) -> ScanOutcome:
+    error_text = str(error)
+    if is_browser_connection_error(error_text):
+        return ScanOutcome(
+            error_delta=1,
+            tag="error",
+            message_key="log_browser_connection_failed",
+            params={"name": name, "error": error_text},
+            fatal=True,
+        )
+    return ScanOutcome(
+        error_delta=1,
+        tag="error",
+        message_key="log_browser_failed",
+        params={"name": name, "error": error_text},
+    )
+
+
+def is_browser_connection_error(error: object) -> bool:
+    error_text = normalize_browser_debug_text(error).lower()
+    return any(token in error_text for token in _BROWSER_CONNECTION_ERROR_TOKENS)
 
 
 def _launch_browser_or_report_missing(playwright, launch_kwargs: dict, *, browser_channel: str):

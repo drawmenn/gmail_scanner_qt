@@ -106,6 +106,22 @@ class _FakePromptWindow:
         return False
 
 
+class _FakeAutoPauseWindow:
+    _handle_runtime_browser_auto_pause = MainWindow._handle_runtime_browser_auto_pause
+    _handle_runtime_repeated_error_auto_pause = MainWindow._handle_runtime_repeated_error_auto_pause
+
+    def __init__(self, provider: str = "google_browser", runtime_state: str = "running") -> None:
+        self.runtime_settings = mock.Mock(provider=provider)
+        self.runtime_state = runtime_state
+        self.resume_scan_after_chromium_install = True
+        self.auto_review_timer = mock.Mock()
+        self.worker = mock.Mock()
+        self.runtime_notes: list[str] = []
+
+    def refresh_runtime_panel(self, note_key: str | None = None) -> None:
+        self.runtime_notes.append(note_key or "")
+
+
 class _FakeStartupPromptWindow:
     maybe_request_chromium_on_launch = MainWindow.maybe_request_chromium_on_launch
 
@@ -169,6 +185,28 @@ class MainWindowInstallFlowTests(unittest.TestCase):
 
         self.assertEqual(window.pause_calls, 0)
         self.assertEqual(window.install_requests, [])
+
+    def test_runtime_browser_connection_failure_pauses_ui(self) -> None:
+        window = _FakeAutoPauseWindow()
+
+        window._handle_runtime_browser_auto_pause("log_browser_connection_failed")
+
+        self.assertEqual(window.runtime_state, "paused")
+        self.assertFalse(window.resume_scan_after_chromium_install)
+        window.auto_review_timer.stop.assert_called_once_with()
+        window.worker.pause_scanning.assert_called_once_with()
+        self.assertEqual(window.runtime_notes, ["runtime_note_paused_browser_error"])
+
+    def test_runtime_repeated_errors_pause_ui(self) -> None:
+        window = _FakeAutoPauseWindow()
+
+        window._handle_runtime_repeated_error_auto_pause("log_scanner_auto_paused_repeated_errors")
+
+        self.assertEqual(window.runtime_state, "paused")
+        self.assertFalse(window.resume_scan_after_chromium_install)
+        window.auto_review_timer.stop.assert_called_once_with()
+        window.worker.pause_scanning.assert_called_once_with()
+        self.assertEqual(window.runtime_notes, ["runtime_note_paused_repeated_errors"])
 
     def test_frozen_launch_prompts_install_for_browser_provider(self) -> None:
         window = _FakeStartupPromptWindow()

@@ -326,6 +326,8 @@ class MainWindow(QMainWindow):
         self.log_buffer.add_entry(entry)
         self._record_auto_available_hit(message_key, params)
         self._handle_runtime_browser_missing(message_key)
+        self._handle_runtime_browser_auto_pause(message_key)
+        self._handle_runtime_repeated_error_auto_pause(message_key)
 
     def _record_auto_available_hit(self, message_key: str, params: dict) -> None:
         if message_key != "log_name_available":
@@ -393,6 +395,32 @@ class MainWindow(QMainWindow):
         if resume_scan:
             self.pause()
         self.request_chromium_install(resume_scan=resume_scan, skip_installed_check=True)
+
+    def _handle_runtime_browser_auto_pause(self, message_key: str) -> None:
+        if message_key != "log_browser_connection_failed":
+            return
+        if not provider_requires_chromium(self.runtime_settings.provider):
+            return
+        if self.runtime_state != "running":
+            return
+
+        self.runtime_state = "paused"
+        self.resume_scan_after_chromium_install = False
+        self.auto_review_timer.stop()
+        self.worker.pause_scanning()
+        self.refresh_runtime_panel("runtime_note_paused_browser_error")
+
+    def _handle_runtime_repeated_error_auto_pause(self, message_key: str) -> None:
+        if message_key != "log_scanner_auto_paused_repeated_errors":
+            return
+        if self.runtime_state != "running":
+            return
+
+        self.runtime_state = "paused"
+        self.resume_scan_after_chromium_install = False
+        self.auto_review_timer.stop()
+        self.worker.pause_scanning()
+        self.refresh_runtime_panel("runtime_note_paused_repeated_errors")
 
     def maybe_request_chromium_on_launch(self) -> None:
         if not _is_compiled_runtime():

@@ -13,6 +13,8 @@ if str(SRC) not in sys.path:
 from gmail_ai_qt_app.models.state import RuntimeSettings
 from gmail_ai_qt_app.services.providers import (
     browser_launch_kwargs,
+    browser_failure_outcome,
+    is_browser_connection_error,
     parse_browser_response,
     parse_google_browser_content,
 )
@@ -113,6 +115,16 @@ class ParseGoogleBrowserContentTests(unittest.TestCase):
 
 
 class ParseBrowserResponseTests(unittest.TestCase):
+    def test_browser_connection_error_is_fatal_pause_outcome(self) -> None:
+        error = "Page.goto: net::ERR_CONNECTION_RESET at https://accounts.google.com/signin"
+
+        outcome = browser_failure_outcome("kitndt", error)
+
+        self.assertTrue(is_browser_connection_error(error))
+        self.assertTrue(outcome.fatal)
+        self.assertEqual(outcome.error_delta, 1)
+        self.assertEqual(outcome.message_key, "log_browser_connection_failed")
+
     def test_launch_kwargs_include_system_chrome_channel(self) -> None:
         settings = RuntimeSettings(
             browser_channel="chrome",

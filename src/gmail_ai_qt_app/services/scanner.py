@@ -27,6 +27,9 @@ from .providers import (
 from .seed_utils import normalize_seed_value, sanitize_seed_values
 
 
+_CONSECUTIVE_ERROR_PAUSE_THRESHOLD = 3
+
+
 @dataclass(frozen=True)
 class LocalScanResult:
     task_id: int
@@ -76,6 +79,8 @@ class ScannerWorker(QObject):
         self._active_local_scan_id: int | None = None
         self._active_local_scan_generation: int | None = None
         self._active_local_scan_cancel_event: Event | None = None
+        self._consecutive_error_key = ""
+        self._consecutive_error_count = 0
         self._settings.seeds = sanitize_seed_values(self._settings.seeds)
         self._rebuild_name_pool_locked(self._settings.seeds)
 
@@ -151,6 +156,7 @@ class ScannerWorker(QObject):
             self._pending_candidate = None
             self._candidate_index = 0
             self._pool_exhausted = False
+            self._reset_consecutive_errors_locked()
             self._rebuild_name_pool_locked(self._settings.seeds)
 
         self._stop_request_timer()
@@ -173,6 +179,7 @@ class ScannerWorker(QObject):
             self._pending_candidate = None
             self._candidate_index = 0
             self._pool_exhausted = False
+            self._reset_consecutive_errors_locked()
             self._rebuild_name_pool_locked(self._settings.seeds)
 
         self._stop_request_timer()
@@ -197,6 +204,7 @@ class ScannerWorker(QObject):
             if self._settings.provider == "custom":
                 self._generation += 1
                 self._pending_candidate = None
+                self._reset_consecutive_errors_locked()
 
         if self._settings.provider == "custom":
             self._stop_request_timer()
@@ -226,6 +234,7 @@ class ScannerWorker(QObject):
             if provider_requires_chromium(self._settings.provider):
                 self._generation += 1
                 self._pending_candidate = None
+                self._reset_consecutive_errors_locked()
 
         if provider_requires_chromium(self._settings.provider):
             self._stop_request_timer()
@@ -243,6 +252,7 @@ class ScannerWorker(QObject):
             self._pending_candidate = None
             self._candidate_index = 0
             self._pool_exhausted = False
+            self._reset_consecutive_errors_locked()
         self._emit_request_state("idle")
         self._schedule_next_request(0)
 
@@ -253,6 +263,7 @@ class ScannerWorker(QObject):
                 self._paused = True
                 self._generation += 1
                 self._pending_candidate = None
+                self._reset_consecutive_errors_locked()
         self._stop_request_timer()
         canceled = self._abort_current_reply() or self._cancel_active_local_scan()
         if canceled:
@@ -269,6 +280,7 @@ class ScannerWorker(QObject):
             self._pending_candidate = None
             self._candidate_index = 0
             self._pool_exhausted = False
+            self._reset_consecutive_errors_locked()
         self._stop_request_timer()
         canceled = self._abort_current_reply() or self._cancel_active_local_scan()
         if canceled:
@@ -380,7 +392,11 @@ class ScannerWorker(QObject):
                 reply.errorString(),
                 self._settings,
             )
-            self._complete_outcome(outcome)
+            consecutive_error_count = self._complete_outcome(outcome)
+            if consecutive_error_count >= _CONSECUTIVE_ERROR_PAUSE_THRESHOLD:
+                self._pause_after_repeated_errors(outcome, consecutive_error_count)
+                reply.deleteLater()
+                return
             self._emit_request_state("error", {"error": reply.errorString()})
             reply.deleteLater()
             self._schedule_next_request(self._request_interval_ms)
@@ -396,7 +412,11 @@ class ScannerWorker(QObject):
             reply.errorString(),
             self._settings,
         )
-        self._complete_outcome(outcome)
+        consecutive_error_count = self._complete_outcome(outcome)
+        if consecutive_error_count >= _CONSECUTIVE_ERROR_PAUSE_THRESHOLD:
+            self._pause_after_repeated_errors(outcome, consecutive_error_count)
+            reply.deleteLater()
+            return
         self._emit_request_state("idle")
         reply.deleteLater()
         self._schedule_next_request(self._request_interval_ms)
@@ -412,7 +432,10 @@ class ScannerWorker(QObject):
             self._pending_candidate = None
 
         outcome = self._manual_outcome(candidate, decision)
-        self._complete_outcome(outcome)
+        consecutive_error_count = self._complete_outcome(outcome)
+        if consecutive_error_count >= _CONSECUTIVE_ERROR_PAUSE_THRESHOLD:
+            self._pause_after_repeated_errors(outcome, consecutive_error_count)
+            return
         self._emit_request_state("idle")
         self._schedule_next_request(0)
 
@@ -561,7 +584,13 @@ class ScannerWorker(QObject):
             return
 
         if result.outcome is not None:
-            self._complete_outcome(result.outcome)
+            consecutive_error_count = self._complete_outcome(result.outcome)
+            if result.outcome.fatal:
+                self._pause_after_fatal_outcome(result.outcome)
+                return
+            if consecutive_error_count >= _CONSECUTIVE_ERROR_PAUSE_THRESHOLD:
+                self._pause_after_repeated_errors(result.outcome, consecutive_error_count)
+                return
         self._emit_request_state("idle")
         self._schedule_next_request(self._request_interval_ms)
 
@@ -598,13 +627,14 @@ class ScannerWorker(QObject):
             "history": self._history.to_payload(),
         }
 
-    def _complete_outcome(self, outcome) -> None:
+    def _complete_outcome(self, outcome: ScanOutcome) -> int:
         with self._lock:
             self._stats.checked += outcome.checked_delta
             self._stats.hit += outcome.hit_delta
             self._stats.taken += outcome.taken_delta
             self._stats.hold += outcome.hold_delta
             self._stats.error += outcome.error_delta
+            consecutive_error_count = self._record_consecutive_error_locked(outcome)
             if (
                 outcome.checked_delta
                 or outcome.hit_delta
@@ -618,6 +648,66 @@ class ScannerWorker(QObject):
         if outcome.message_key:
             self.log_signal.emit(outcome.message_key, outcome.tag, outcome.params)
         self.snapshot_signal.emit(payload)
+        return consecutive_error_count
+
+    def _pause_after_fatal_outcome(self, outcome: ScanOutcome) -> None:
+        with self._lock:
+            if not self._running or self._paused:
+                return
+            self._paused = True
+            self._generation += 1
+            self._pending_candidate = None
+
+        error_text = str(outcome.params.get("error", "")).strip()
+        self._emit_request_state("error", {"error": error_text} if error_text else {})
+
+    def _pause_after_repeated_errors(self, outcome: ScanOutcome, count: int) -> None:
+        with self._lock:
+            if not self._running or self._paused:
+                return
+            self._paused = True
+            self._generation += 1
+            self._pending_candidate = None
+
+        error_text = self._describe_repeated_error(outcome)
+        self.log_signal.emit(
+            "log_scanner_auto_paused_repeated_errors",
+            "error",
+            {
+                "count": str(count),
+                "error": error_text,
+            },
+        )
+        self._emit_request_state("error", {"error": error_text} if error_text else {})
+
+    def _record_consecutive_error_locked(self, outcome: ScanOutcome) -> int:
+        if outcome.error_delta <= 0:
+            self._reset_consecutive_errors_locked()
+            return 0
+
+        error_key = self._outcome_error_key(outcome)
+        if error_key == self._consecutive_error_key:
+            self._consecutive_error_count += 1
+        else:
+            self._consecutive_error_key = error_key
+            self._consecutive_error_count = 1
+        return self._consecutive_error_count
+
+    def _reset_consecutive_errors_locked(self) -> None:
+        self._consecutive_error_key = ""
+        self._consecutive_error_count = 0
+
+    @staticmethod
+    def _outcome_error_key(outcome: ScanOutcome) -> str:
+        return outcome.message_key or outcome.tag or "error"
+
+    @staticmethod
+    def _describe_repeated_error(outcome: ScanOutcome) -> str:
+        for key in ("error", "status", "detail", "url"):
+            value = str(outcome.params.get(key, "")).strip()
+            if value:
+                return value
+        return outcome.message_key or "unknown error"
 
     def _emit_request_state(self, state: str, params: dict | None = None) -> None:
         self.request_state_signal.emit(state, params or {})
