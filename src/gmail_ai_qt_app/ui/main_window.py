@@ -64,6 +64,22 @@ def _is_compiled_runtime() -> bool:
     )
 
 
+def _program_directory() -> Path:
+    executable = (getattr(sys, "executable", "") or "").strip()
+    if _is_compiled_runtime() and executable:
+        return Path(executable).resolve().parent
+
+    onefile_directory = os.environ.get("NUITKA_ONEFILE_DIRECTORY", "").strip()
+    if onefile_directory:
+        return Path(onefile_directory).resolve()
+
+    entrypoint = (sys.argv[0] if sys.argv else "").strip()
+    if entrypoint:
+        return Path(entrypoint).resolve().parent
+
+    return Path.cwd()
+
+
 class MainWindow(QMainWindow):
     MANUAL_REVIEW_URL = "https://accounts.google.com/signin"
     AUTO_REVIEW_DELAY_MS = 350
@@ -344,7 +360,13 @@ class MainWindow(QMainWindow):
         return record
 
     def review_records_path(self) -> Path:
-        return self.settings_store.path.parent / "review_records.csv"
+        return self.program_directory() / "review_records.csv"
+
+    def program_directory(self) -> Path:
+        override = getattr(self, "record_save_directory", None)
+        if override is not None:
+            return Path(override)
+        return _program_directory()
 
     def _append_review_record_to_disk(self, record: dict) -> tuple[bool, Path, str | None]:
         path = self.review_records_path()

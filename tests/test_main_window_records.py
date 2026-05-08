@@ -28,6 +28,7 @@ class _RecordWindow:
         self.review_records: list[dict] = []
         self.review_panel_refreshes = 0
         self.settings_store = _SettingsStore(settings_path)
+        self.record_save_directory = settings_path.parent
         self.log_events: list[tuple[str, str, dict]] = []
 
     def refresh_review_panel(self) -> None:
@@ -38,6 +39,7 @@ class _RecordWindow:
 
     record_review_record = MainWindow.record_review_record
     review_records_path = MainWindow.review_records_path
+    program_directory = MainWindow.program_directory
     _append_review_record_to_disk = MainWindow._append_review_record_to_disk
 
 
