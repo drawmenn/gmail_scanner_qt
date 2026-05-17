@@ -92,7 +92,7 @@ class ScannerWorkerCancellationTests(unittest.TestCase):
                     outcome=ScanOutcome(
                         error_delta=1,
                         tag="error",
-                        message_key="log_browser_timeout",
+                        message_key="log_google_browser_result_unknown",
                         params={"name": f"kitnd{task_id}"},
                     ),
                 )
@@ -103,8 +103,74 @@ class ScannerWorkerCancellationTests(unittest.TestCase):
         self.assertEqual(worker._generation, 4)
         self.assertEqual(logs[-1][0], "log_scanner_auto_paused_repeated_errors")
         self.assertEqual(logs[-1][2]["count"], "3")
-        self.assertEqual(logs[-1][2]["error"], "log_browser_timeout")
-        self.assertEqual(states[-1], ("error", {"error": "log_browser_timeout"}))
+        self.assertEqual(logs[-1][2]["error"], "log_google_browser_result_unknown")
+        self.assertEqual(states[-1], ("error", {"error": "log_google_browser_result_unknown"}))
+
+    def test_connection_error_with_proxy_auto_disables_proxy_without_pause(self) -> None:
+        worker = ScannerWorker(
+            RuntimeSettings(
+                provider="google_browser",
+                proxy_enabled=True,
+                proxy_url="127.0.0.1:7897",
+            )
+        )
+        logs = []
+        worker.log_signal.connect(lambda key, tag, params: logs.append((key, tag, params)))
+        worker._running = True
+        worker._paused = False
+        worker._generation = 3
+        worker._active_local_scan_id = 9
+        worker._active_local_scan_generation = 3
+
+        worker._handle_local_scan_result(
+            LocalScanResult(
+                task_id=9,
+                generation=3,
+                outcome=ScanOutcome(
+                    error_delta=1,
+                    tag="error",
+                    message_key="log_browser_connection_failed",
+                    params={"name": "kitndt", "error": "net::ERR_PROXY_CONNECTION_FAILED"},
+                    fatal=True,
+                ),
+            )
+        )
+
+        self.assertTrue(worker._running)
+        self.assertFalse(worker._paused)
+        self.assertFalse(worker._settings.proxy_enabled)
+        self.assertEqual(logs[-1][0], "log_scanner_auto_repair_proxy_disabled")
+        self.assertEqual(logs[-1][2]["proxy"], "127.0.0.1:7897")
+
+    def test_browser_timeout_auto_extends_timeout_without_pause(self) -> None:
+        worker = ScannerWorker(RuntimeSettings(provider="google_browser", browser_timeout_ms=10_000))
+        logs = []
+        worker.log_signal.connect(lambda key, tag, params: logs.append((key, tag, params)))
+        worker._running = True
+        worker._paused = False
+        worker._generation = 3
+        worker._active_local_scan_id = 9
+        worker._active_local_scan_generation = 3
+
+        worker._handle_local_scan_result(
+            LocalScanResult(
+                task_id=9,
+                generation=3,
+                outcome=ScanOutcome(
+                    error_delta=1,
+                    tag="error",
+                    message_key="log_browser_timeout",
+                    params={"name": "kitndt"},
+                ),
+            )
+        )
+
+        self.assertTrue(worker._running)
+        self.assertFalse(worker._paused)
+        self.assertEqual(worker._settings.browser_timeout_ms, 20_000)
+        self.assertEqual(logs[-1][0], "log_scanner_auto_repair_timeout_extended")
+        self.assertEqual(logs[-1][2]["old_timeout"], "10000")
+        self.assertEqual(logs[-1][2]["new_timeout"], "20000")
 
     def test_success_resets_repeated_error_counter(self) -> None:
         worker = ScannerWorker(RuntimeSettings(provider="google_browser"))

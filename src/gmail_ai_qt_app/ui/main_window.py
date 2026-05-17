@@ -326,6 +326,7 @@ class MainWindow(QMainWindow):
         self.log_buffer.add_entry(entry)
         self._record_auto_available_hit(message_key, params)
         self._handle_runtime_browser_missing(message_key)
+        self._handle_runtime_auto_repair(message_key, params)
         self._handle_runtime_browser_auto_pause(message_key)
         self._handle_runtime_repeated_error_auto_pause(message_key)
 
@@ -397,7 +398,7 @@ class MainWindow(QMainWindow):
         self.request_chromium_install(resume_scan=resume_scan, skip_installed_check=True)
 
     def _handle_runtime_browser_auto_pause(self, message_key: str) -> None:
-        if message_key != "log_browser_connection_failed":
+        if message_key != "log_scanner_auto_paused_browser_error":
             return
         if not provider_requires_chromium(self.runtime_settings.provider):
             return
@@ -407,7 +408,6 @@ class MainWindow(QMainWindow):
         self.runtime_state = "paused"
         self.resume_scan_after_chromium_install = False
         self.auto_review_timer.stop()
-        self.worker.pause_scanning()
         self.refresh_runtime_panel("runtime_note_paused_browser_error")
 
     def _handle_runtime_repeated_error_auto_pause(self, message_key: str) -> None:
@@ -419,8 +419,29 @@ class MainWindow(QMainWindow):
         self.runtime_state = "paused"
         self.resume_scan_after_chromium_install = False
         self.auto_review_timer.stop()
-        self.worker.pause_scanning()
         self.refresh_runtime_panel("runtime_note_paused_repeated_errors")
+
+    def _handle_runtime_auto_repair(self, message_key: str, params: dict) -> None:
+        if message_key == "log_scanner_auto_repair_proxy_disabled":
+            self.runtime_settings.proxy_enabled = False
+            previous = self.proxy_check.blockSignals(True)
+            self.proxy_check.setChecked(False)
+            self.proxy_check.blockSignals(previous)
+            self.refresh_runtime_panel()
+            return
+
+        if message_key == "log_scanner_auto_repair_timeout_extended":
+            try:
+                timeout_ms = int(params.get("new_timeout", 0))
+            except (TypeError, ValueError):
+                timeout_ms = 0
+            if timeout_ms <= 0:
+                return
+            self.runtime_settings.browser_timeout_ms = timeout_ms
+            previous = self.browser_timeout_spin.blockSignals(True)
+            self.browser_timeout_spin.setValue(timeout_ms)
+            self.browser_timeout_spin.blockSignals(previous)
+            self.refresh_browser_provider_panel()
 
     def maybe_request_chromium_on_launch(self) -> None:
         if not _is_compiled_runtime():

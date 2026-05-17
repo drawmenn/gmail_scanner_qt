@@ -106,20 +106,44 @@ class _FakePromptWindow:
         return False
 
 
+class _FakeControl:
+    def __init__(self, value=None) -> None:
+        self.value = value
+        self.blocked = False
+
+    def blockSignals(self, blocked: bool) -> bool:
+        previous = self.blocked
+        self.blocked = blocked
+        return previous
+
+    def setChecked(self, value: bool) -> None:
+        self.value = value
+
+    def setValue(self, value: int) -> None:
+        self.value = value
+
+
 class _FakeAutoPauseWindow:
     _handle_runtime_browser_auto_pause = MainWindow._handle_runtime_browser_auto_pause
     _handle_runtime_repeated_error_auto_pause = MainWindow._handle_runtime_repeated_error_auto_pause
+    _handle_runtime_auto_repair = MainWindow._handle_runtime_auto_repair
 
     def __init__(self, provider: str = "google_browser", runtime_state: str = "running") -> None:
-        self.runtime_settings = mock.Mock(provider=provider)
+        self.runtime_settings = RuntimeSettings(provider=provider, proxy_enabled=True, browser_timeout_ms=10_000)
         self.runtime_state = runtime_state
         self.resume_scan_after_chromium_install = True
         self.auto_review_timer = mock.Mock()
         self.worker = mock.Mock()
+        self.proxy_check = _FakeControl(True)
+        self.browser_timeout_spin = _FakeControl(10_000)
         self.runtime_notes: list[str] = []
+        self.browser_refreshes = 0
 
     def refresh_runtime_panel(self, note_key: str | None = None) -> None:
         self.runtime_notes.append(note_key or "")
+
+    def refresh_browser_provider_panel(self) -> None:
+        self.browser_refreshes += 1
 
 
 class _FakeStartupPromptWindow:
@@ -189,12 +213,12 @@ class MainWindowInstallFlowTests(unittest.TestCase):
     def test_runtime_browser_connection_failure_pauses_ui(self) -> None:
         window = _FakeAutoPauseWindow()
 
-        window._handle_runtime_browser_auto_pause("log_browser_connection_failed")
+        window._handle_runtime_browser_auto_pause("log_scanner_auto_paused_browser_error")
 
         self.assertEqual(window.runtime_state, "paused")
         self.assertFalse(window.resume_scan_after_chromium_install)
         window.auto_review_timer.stop.assert_called_once_with()
-        window.worker.pause_scanning.assert_called_once_with()
+        window.worker.pause_scanning.assert_not_called()
         self.assertEqual(window.runtime_notes, ["runtime_note_paused_browser_error"])
 
     def test_runtime_repeated_errors_pause_ui(self) -> None:
@@ -205,8 +229,32 @@ class MainWindowInstallFlowTests(unittest.TestCase):
         self.assertEqual(window.runtime_state, "paused")
         self.assertFalse(window.resume_scan_after_chromium_install)
         window.auto_review_timer.stop.assert_called_once_with()
-        window.worker.pause_scanning.assert_called_once_with()
+        window.worker.pause_scanning.assert_not_called()
         self.assertEqual(window.runtime_notes, ["runtime_note_paused_repeated_errors"])
+
+    def test_runtime_auto_repair_proxy_disabled_updates_ui_state(self) -> None:
+        window = _FakeAutoPauseWindow()
+
+        window._handle_runtime_auto_repair(
+            "log_scanner_auto_repair_proxy_disabled",
+            {"proxy": "http://127.0.0.1:7897"},
+        )
+
+        self.assertFalse(window.runtime_settings.proxy_enabled)
+        self.assertFalse(window.proxy_check.value)
+        self.assertEqual(window.runtime_notes, [""])
+
+    def test_runtime_auto_repair_timeout_extended_updates_ui_state(self) -> None:
+        window = _FakeAutoPauseWindow()
+
+        window._handle_runtime_auto_repair(
+            "log_scanner_auto_repair_timeout_extended",
+            {"new_timeout": "20000"},
+        )
+
+        self.assertEqual(window.runtime_settings.browser_timeout_ms, 20_000)
+        self.assertEqual(window.browser_timeout_spin.value, 20_000)
+        self.assertEqual(window.browser_refreshes, 1)
 
     def test_frozen_launch_prompts_install_for_browser_provider(self) -> None:
         window = _FakeStartupPromptWindow()

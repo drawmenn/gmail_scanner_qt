@@ -19,6 +19,7 @@ from .playwright_installer import provider_requires_chromium
 from .providers import (
     ScanCanceledError,
     ScanOutcome,
+    is_browser_connection_error,
     normalize_provider,
     parse_network_response,
     prepare_scan,
@@ -28,6 +29,7 @@ from .seed_utils import normalize_seed_value, sanitize_seed_values
 
 
 _CONSECUTIVE_ERROR_PAUSE_THRESHOLD = 3
+_AUTO_REPAIR_TIMEOUT_MAX_MS = 30_000
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,7 @@ class ScannerWorker(QObject):
         self._active_local_scan_cancel_event: Event | None = None
         self._consecutive_error_key = ""
         self._consecutive_error_count = 0
+        self._auto_repair_actions: set[str] = set()
         self._settings.seeds = sanitize_seed_values(self._settings.seeds)
         self._rebuild_name_pool_locked(self._settings.seeds)
 
@@ -170,6 +173,8 @@ class ScannerWorker(QObject):
         with self._lock:
             self._settings.proxy_enabled = enabled
             self._settings.proxy_url = proxy_url.strip()
+            self._auto_repair_actions.discard("disable_proxy")
+            self._reset_consecutive_errors_locked()
 
     @Slot(str)
     def _set_provider(self, provider: str) -> None:
@@ -180,6 +185,7 @@ class ScannerWorker(QObject):
             self._candidate_index = 0
             self._pool_exhausted = False
             self._reset_consecutive_errors_locked()
+            self._auto_repair_actions.clear()
             self._rebuild_name_pool_locked(self._settings.seeds)
 
         self._stop_request_timer()
@@ -235,6 +241,7 @@ class ScannerWorker(QObject):
                 self._generation += 1
                 self._pending_candidate = None
                 self._reset_consecutive_errors_locked()
+                self._auto_repair_actions.discard("extend_browser_timeout")
 
         if provider_requires_chromium(self._settings.provider):
             self._stop_request_timer()
@@ -253,6 +260,7 @@ class ScannerWorker(QObject):
             self._candidate_index = 0
             self._pool_exhausted = False
             self._reset_consecutive_errors_locked()
+            self._auto_repair_actions.clear()
         self._emit_request_state("idle")
         self._schedule_next_request(0)
 
@@ -393,6 +401,9 @@ class ScannerWorker(QObject):
                 self._settings,
             )
             consecutive_error_count = self._complete_outcome(outcome)
+            if self._attempt_auto_repair(outcome):
+                reply.deleteLater()
+                return
             if consecutive_error_count >= _CONSECUTIVE_ERROR_PAUSE_THRESHOLD:
                 self._pause_after_repeated_errors(outcome, consecutive_error_count)
                 reply.deleteLater()
@@ -413,6 +424,9 @@ class ScannerWorker(QObject):
             self._settings,
         )
         consecutive_error_count = self._complete_outcome(outcome)
+        if self._attempt_auto_repair(outcome):
+            reply.deleteLater()
+            return
         if consecutive_error_count >= _CONSECUTIVE_ERROR_PAUSE_THRESHOLD:
             self._pause_after_repeated_errors(outcome, consecutive_error_count)
             reply.deleteLater()
@@ -433,6 +447,8 @@ class ScannerWorker(QObject):
 
         outcome = self._manual_outcome(candidate, decision)
         consecutive_error_count = self._complete_outcome(outcome)
+        if self._attempt_auto_repair(outcome):
+            return
         if consecutive_error_count >= _CONSECUTIVE_ERROR_PAUSE_THRESHOLD:
             self._pause_after_repeated_errors(outcome, consecutive_error_count)
             return
@@ -585,6 +601,8 @@ class ScannerWorker(QObject):
 
         if result.outcome is not None:
             consecutive_error_count = self._complete_outcome(result.outcome)
+            if self._attempt_auto_repair(result.outcome):
+                return
             if result.outcome.fatal:
                 self._pause_after_fatal_outcome(result.outcome)
                 return
@@ -659,7 +677,77 @@ class ScannerWorker(QObject):
             self._pending_candidate = None
 
         error_text = str(outcome.params.get("error", "")).strip()
+        self.log_signal.emit(
+            "log_scanner_auto_paused_browser_error",
+            "error",
+            {"error": error_text or outcome.message_key or "unknown error"},
+        )
         self._emit_request_state("error", {"error": error_text} if error_text else {})
+
+    def _attempt_auto_repair(self, outcome: ScanOutcome) -> bool:
+        if outcome.error_delta <= 0:
+            return False
+
+        if self._disable_proxy_after_connection_error(outcome):
+            return True
+
+        if self._extend_timeout_after_browser_timeout(outcome):
+            return True
+
+        return False
+
+    def _disable_proxy_after_connection_error(self, outcome: ScanOutcome) -> bool:
+        error_text = self._describe_repeated_error(outcome)
+        if not self._is_connection_like_error(outcome, error_text):
+            return False
+
+        with self._lock:
+            if (
+                "disable_proxy" in self._auto_repair_actions
+                or not self._settings.proxy_enabled
+                or not self._settings.proxy_url.strip()
+            ):
+                return False
+            previous_proxy = self._settings.proxy_url.strip()
+            self._settings.proxy_enabled = False
+            self._auto_repair_actions.add("disable_proxy")
+            self._reset_consecutive_errors_locked()
+
+        self.log_signal.emit(
+            "log_scanner_auto_repair_proxy_disabled",
+            "info",
+            {"proxy": previous_proxy, "error": error_text},
+        )
+        self._emit_request_state("idle")
+        self._schedule_next_request(self._request_interval_ms)
+        return True
+
+    def _extend_timeout_after_browser_timeout(self, outcome: ScanOutcome) -> bool:
+        if outcome.message_key != "log_browser_timeout":
+            return False
+
+        with self._lock:
+            if "extend_browser_timeout" in self._auto_repair_actions:
+                return False
+            current_timeout = max(1000, int(self._settings.browser_timeout_ms or 10_000))
+            next_timeout = min(max(current_timeout * 2, current_timeout + 5000), _AUTO_REPAIR_TIMEOUT_MAX_MS)
+            if next_timeout <= current_timeout:
+                return False
+            self._settings.browser_timeout_ms = next_timeout
+            self._auto_repair_actions.add("extend_browser_timeout")
+            self._reset_consecutive_errors_locked()
+
+        self.log_signal.emit(
+            "log_scanner_auto_repair_timeout_extended",
+            "info",
+            {
+                "old_timeout": str(current_timeout),
+                "new_timeout": str(next_timeout),
+            },
+        )
+        self._emit_request_state("idle")
+        self._schedule_next_request(self._request_interval_ms)
+        return True
 
     def _pause_after_repeated_errors(self, outcome: ScanOutcome, count: int) -> None:
         with self._lock:
@@ -708,6 +796,29 @@ class ScannerWorker(QObject):
             if value:
                 return value
         return outcome.message_key or "unknown error"
+
+    @staticmethod
+    def _is_connection_like_error(outcome: ScanOutcome, error_text: str) -> bool:
+        if outcome.message_key == "log_browser_connection_failed":
+            return True
+        if is_browser_connection_error(error_text):
+            return True
+        normalized = error_text.lower()
+        return any(
+            token in normalized
+            for token in (
+                "connection",
+                "network",
+                "proxy",
+                "tunnel",
+                "refused",
+                "reset",
+                "timed out",
+                "timeout",
+                "host",
+                "dns",
+            )
+        )
 
     def _emit_request_state(self, state: str, params: dict | None = None) -> None:
         self.request_state_signal.emit(state, params or {})

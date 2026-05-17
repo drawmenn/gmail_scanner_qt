@@ -1,5 +1,5 @@
 #define AppName "Gmail AI Qt"
-#define AppVersion "0.1.3"
+#define AppVersion "0.1.4"
 #define AppPublisher "drawmenn"
 #define AppExeName "gmail-ai-qt.exe"
 

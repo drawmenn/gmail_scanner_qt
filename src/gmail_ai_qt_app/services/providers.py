@@ -346,6 +346,7 @@ def run_google_browser_scan(
 
     browser = None
     context = None
+    timeout_ms = max(15_000, int(browser_settings.browser_timeout_ms or 15_000))
     try:
         ensure_scan_not_canceled(cancel_event)
         with sync_playwright() as playwright:
@@ -375,12 +376,12 @@ def run_google_browser_scan(
             page.goto(
                 "https://accounts.google.com/signin/v2/identifier",
                 wait_until="domcontentloaded",
-                timeout=15_000,
+                timeout=timeout_ms,
             )
             ensure_scan_not_canceled(cancel_event)
-            page.locator('input[type="email"]').first.fill(f"{name}@gmail.com", timeout=10_000)
+            page.locator('input[type="email"]').first.fill(f"{name}@gmail.com", timeout=timeout_ms)
             ensure_scan_not_canceled(cancel_event)
-            page.locator("#identifierNext").first.click(timeout=10_000)
+            page.locator("#identifierNext").first.click(timeout=timeout_ms)
             wait_for_cancellation(3000, cancel_event)
             ensure_scan_not_canceled(cancel_event)
 
